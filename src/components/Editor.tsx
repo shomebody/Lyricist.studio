@@ -1,9 +1,12 @@
 import { useRef, useEffect, useState } from 'react';
 import Editor, { useMonaco } from '@monaco-editor/react';
 import { useStore, TEMPLATES } from '../store/useStore';
+import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
 import { countLineSyllables } from '../lib/syllables';
 import { validateSunoTags } from '../lib/suno';
 import { findCliches, ClicheMatch } from '../lib/cliches';
+import { exportForSuno } from '../lib/arrangement';
+import { ArrangementStatusBar } from './ArrangementStatusBar';
 import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { doc, setDoc, addDoc, collection } from 'firebase/firestore';
@@ -126,6 +129,9 @@ export function LyricEditor() {
       };
     });
     setLineStats(stats);
+
+    // Recompute bar-aware arrangement mapping
+    useArrangementStore.getState().recomputeMapping(val);
   };
 
   // Re-calculate when template changes
@@ -160,7 +166,13 @@ export function LyricEditor() {
   };
 
   const handleExport = () => {
-    const exportText = `STYLE OF MUSIC:\n${stylePrompt}\n\nCUSTOM LYRICS:\n${lyrics}`;
+    const arrangementState = useArrangementStore.getState();
+    const arrangement = arrangementState.currentArrangementId
+      ? selectCurrentArrangement(arrangementState)
+      : null;
+    const exportText = arrangement
+      ? exportForSuno(lyrics, arrangement, stylePrompt, arrangementState.showBarAnnotations)
+      : `STYLE OF MUSIC:\n${stylePrompt}\n\nCUSTOM LYRICS:\n${lyrics}`;
     navigator.clipboard.writeText(exportText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -329,6 +341,8 @@ ${lyrics}`
           className="w-full bg-zinc-900 border border-zinc-800 rounded-md p-2 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none h-16"
         />
       </div>
+
+      <ArrangementStatusBar />
 
       <div className="flex-1 relative flex overflow-hidden">
         {/* Custom Gutter for Syllable Counts */}

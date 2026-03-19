@@ -1,7 +1,9 @@
 import { ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
 import { AIPanel } from './AIPanel';
+import { TemplateBuilder } from './TemplateBuilder';
 import { useStore } from '../store/useStore';
+import { useArrangementStore } from '../store/arrangementStore';
 
 interface LayoutProps {
   children: ReactNode;
@@ -9,12 +11,13 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const { isAIPanelOpen } = useStore();
+  const { isTemplateBuilderOpen, setTemplateBuilderOpen, editingTemplateId } = useArrangementStore();
 
   return (
     <div className="flex h-screen w-full bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
       {/* Left Sidebar: Templates & Projects */}
       <Sidebar />
-      
+
       {/* Center: Editor */}
       <main className="flex-1 flex flex-col h-full border-r border-zinc-800 bg-zinc-900 relative">
         {children}
@@ -23,6 +26,14 @@ export function Layout({ children }: LayoutProps) {
       {/* Right Sidebar: AI Co-Writer */}
       {isAIPanelOpen && (
         <AIPanel />
+      )}
+
+      {/* Template Builder Modal */}
+      {isTemplateBuilderOpen && (
+        <TemplateBuilder
+          onClose={() => setTemplateBuilderOpen(false)}
+          initialTemplateId={editingTemplateId}
+        />
       )}
     </div>
   );

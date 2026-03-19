@@ -1,9 +1,12 @@
-import { Folder, Music, Settings, Sparkles, ListTree, LogIn, LogOut, Plus } from 'lucide-react';
+import { Folder, Music, Settings, Sparkles, ListTree, LogIn, LogOut, Plus, LayoutTemplate } from 'lucide-react';
 import { useStore, TEMPLATES } from '../store/useStore';
+import { useArrangementStore } from '../store/arrangementStore';
+import { BAR_TEMPLATES } from '../lib/arrangement';
 import { signInWithGoogle, logOut } from '../firebase';
 
 export function Sidebar() {
   const { currentTemplateId, setTemplateId, lyrics, user, projects, currentProjectId, setCurrentProjectId, setLyrics, setStylePrompt } = useStore();
+  const { currentArrangementId, setCurrentArrangement, customTemplates, setTemplateBuilderOpen, setEditingTemplateId } = useArrangementStore();
 
   const templates = Object.values(TEMPLATES);
 
@@ -113,9 +116,9 @@ export function Sidebar() {
                   {genreTemplates.map((t) => (
                     <li key={t.id}>
                       <button
-                         onClick={() => setTemplateId(t.id)}
+                         onClick={() => { setTemplateId(t.id); setCurrentArrangement(null); }}
                         className={`w-full text-left px-2 py-1.5 text-sm rounded-md transition-colors ${
-                          currentTemplateId === t.id
+                          currentTemplateId === t.id && !currentArrangementId
                             ? 'bg-indigo-500/10 text-indigo-400'
                             : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
                         }`}
@@ -127,6 +130,58 @@ export function Sidebar() {
                 </ul>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-2">
+              <LayoutTemplate className="w-4 h-4" />
+              Bar-Aware Templates
+            </h2>
+            <button
+              onClick={() => { setEditingTemplateId(null); setTemplateBuilderOpen(true); }}
+              className="p-1 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-zinc-200 transition-colors"
+              title="New Template"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="space-y-4 mt-2">
+            {(() => {
+              const allBarTemplates = [...Object.values(BAR_TEMPLATES), ...Object.values(customTemplates)];
+              const grouped = allBarTemplates.reduce((acc, t) => {
+                if (!acc[t.genre]) acc[t.genre] = [];
+                acc[t.genre].push(t);
+                return acc;
+              }, {} as Record<string, typeof allBarTemplates>);
+              return Object.entries(grouped).map(([genre, genreTemplates]) => (
+                <div key={genre}>
+                  <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-wider mb-1 px-2">{genre}</h3>
+                  <ul className="space-y-1">
+                    {genreTemplates.map((t) => (
+                      <li key={t.id}>
+                        <button
+                          onClick={() => {
+                            setCurrentArrangement(t.id);
+                            setTemplateId(null);
+                            setStylePrompt(t.defaultStylePrompt);
+                          }}
+                          className={`w-full text-left px-2 py-1.5 text-sm rounded-md transition-colors ${
+                            currentArrangementId === t.id
+                              ? 'bg-indigo-500/10 text-indigo-400'
+                              : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                          }`}
+                        >
+                          {t.name}
+                          {t.isCustom && <span className="ml-1 text-[10px] text-zinc-600">(custom)</span>}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ));
+            })()}
           </div>
         </div>
       </div>

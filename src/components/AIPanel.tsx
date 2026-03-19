@@ -1,16 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, Bot, User, Zap, BookOpen, Bug, Ruler } from 'lucide-react';
+import { Send, Sparkles, Bot, User, Zap, BookOpen, Bug, Ruler, History } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { GoogleGenAI } from '@google/genai';
 import { RhymeDictionary } from './RhymeDictionary';
 import { LyricDebugger } from './LyricDebugger';
 import { PocketFitter } from './PocketFitter';
+import { VersionHistory } from './VersionHistory';
 
 export function AIPanel() {
   const { chatHistory, addMessage, lyrics, currentTemplateId } = useStore();
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'ai' | 'rhymes' | 'debug' | 'pocket'>('ai');
+  const [activeTab, setActiveTab] = useState<'ai' | 'rhymes' | 'debug' | 'pocket' | 'history'>('ai');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -159,6 +160,17 @@ Current Template: ${currentTemplateId || 'None'}
             <BookOpen className="w-3.5 h-3.5" />
             Rhymes
           </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              activeTab === 'history'
+                ? 'bg-zinc-800 text-indigo-400 shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            History
+          </button>
         </div>
       </div>
 
@@ -244,6 +256,8 @@ Current Template: ${currentTemplateId || 'None'}
         <RhymeDictionary />
       ) : activeTab === 'pocket' ? (
         <PocketFitter />
+      ) : activeTab === 'history' ? (
+        <VersionHistory />
       ) : (
         <LyricDebugger />
       )}
