@@ -248,44 +248,36 @@ export const useArrangementStore = create<ArrangementState>((set, get) => ({
     const mapped = mapLyricsToArrangement(lyrics, template, countLineSyllables);
     const stats = template ? computeArrangementStats(mapped, template) : null;
 
-    // Compute rhyme analysis per section block
+    // Compute rhyme analysis per section using mappedLines data
     const rhymeAnalyses: RhymeAnalysis[] = [];
-    
-    // Simple block parsing (similar to SectionArranger)
-    const blocks: { id: string, label: string, lines: { text: string, index: number }[] }[] = [];
-    let currentBlock: { id: string, label: string, lines: { text: string, index: number }[] } | null = null;
-    
-    const lines = lyrics.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      const isTag = trimmed.startsWith('[') && trimmed.endsWith(']');
-      
-      if (isTag) {
-        if (currentBlock) blocks.push(currentBlock);
-        currentBlock = { id: `block-${i}`, label: trimmed, lines: [] };
-      } else {
-        if (!currentBlock) {
-          currentBlock = { id: `block-untagged`, label: 'Untagged', lines: [] };
-        }
-        if (trimmed) {
-          currentBlock.lines.push({ text: trimmed, index: i });
-        }
-      }
-    }
-    if (currentBlock) blocks.push(currentBlock);
 
-    for (const block of blocks) {
-      if (block.lines.length >= 2) {
-        const { pattern, groups } = analyzeRhymeScheme(block.lines.map(l => l.text));
+    // Group mapped lines by section (using sectionId from the template mapping,
+    // or by structural tags if no template is active)
+    const sectionGroups = new Map<string, { id: string; label: string; lines: { text: string; index: number }[] }>();
+
+    for (const line of mapped) {
+      if (line.isStructuralTag || line.isBlankLine || !line.text.trim()) continue;
+
+      // Use sectionId if template is active, otherwise group by sectionLabel
+      const key = line.sectionId || line.sectionLabel || '__untagged__';
+      const label = line.sectionLabel || 'Untagged';
+
+      if (!sectionGroups.has(key)) {
+        sectionGroups.set(key, { id: key, label, lines: [] });
+      }
+      sectionGroups.get(key)!.lines.push({ text: line.text.trim(), index: line.lineIndex });
+    }
+
+    for (const [, group] of sectionGroups) {
+      if (group.lines.length >= 2) {
+        const { pattern, groups } = analyzeRhymeScheme(group.lines.map(l => l.text));
         rhymeAnalyses.push({
-          sectionId: block.id,
-          sectionLabel: block.label,
+          sectionId: group.id,
+          sectionLabel: group.label,
           pattern,
           lineRhymeGroups: groups.map((g) => ({
             ...g,
-            // Remap lineIndex from block-relative to absolute
-            lineIndex: block.lines[g.lineIndex].index,
+            lineIndex: group.lines[g.lineIndex].index,
           })),
         });
       }

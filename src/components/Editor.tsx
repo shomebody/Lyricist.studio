@@ -280,7 +280,7 @@ export function LyricEditor() {
     setIsFormatting(true);
     try {
       const { GoogleGenAI } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
       
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-pro-preview',
