@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useStore, TEMPLATES } from '../store/useStore';
 import { countLineSyllables } from '../lib/syllables';
-import { GoogleGenAI } from '@google/genai';
-import { Ruler, Sparkles, Check, X, ArrowRight } from 'lucide-react';
+import { Ruler, Sparkles, Check, X, ArrowRight, AlertTriangle } from 'lucide-react';
 
 interface Mismatch {
   id: string;
   lineIndex: number;
   text: string;
   actual: number;
-  target: number;
+  target?: number;
+  isExtraLine?: boolean;
+  sectionName?: string;
   suggestion?: string;
   isFixing?: boolean;
 }
@@ -17,7 +18,6 @@ interface Mismatch {
 export function PocketFitter() {
   const { lyrics, setLyrics, currentTemplateId } = useStore();
   const [mismatches, setMismatches] = useState<Mismatch[]>([]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const template = currentTemplateId ? TEMPLATES[currentTemplateId] : null;
 
@@ -28,27 +28,75 @@ export function PocketFitter() {
     }
 
     const lines = lyrics.split('\n');
-    let structuralLineCount = 0;
     const newMismatches: Mismatch[] = [];
 
-    lines.forEach((line, index) => {
-      const isStructural = line.trim().startsWith('[');
-      if (!isStructural && line.trim().length > 0) {
-        const target = template.pocketMap[structuralLineCount];
-        const actual = countLineSyllables(line);
-        
-        if (target !== undefined && actual !== target) {
-          newMismatches.push({
-            id: Math.random().toString(36).substr(2, 9),
-            lineIndex: index,
-            text: line,
-            actual,
-            target
-          });
+    if (template.sections) {
+      // Section-based analysis
+      let currentSectionName: string | null = null;
+      let currentSectionTemplate: { name: string; lines: number[] } | null = null;
+      let lineCountInSection = 0;
+
+      lines.forEach((line, index) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          // New section
+          currentSectionName = trimmed.slice(1, -1).toLowerCase();
+          // Find matching section in template (e.g. "Verse 1" matches "Verse")
+          currentSectionTemplate = template.sections!.find(s => 
+            currentSectionName!.includes(s.name.toLowerCase())
+          ) || null;
+          lineCountInSection = 0;
+        } else if (trimmed.length > 0) {
+          if (currentSectionTemplate) {
+            const target = currentSectionTemplate.lines[lineCountInSection];
+            const actual = countLineSyllables(line);
+
+            if (target === undefined) {
+              // Extra line!
+              newMismatches.push({
+                id: Math.random().toString(36).substr(2, 9),
+                lineIndex: index,
+                text: line,
+                actual,
+                isExtraLine: true,
+                sectionName: currentSectionTemplate.name
+              });
+            } else if (actual !== target) {
+              newMismatches.push({
+                id: Math.random().toString(36).substr(2, 9),
+                lineIndex: index,
+                text: line,
+                actual,
+                target,
+                sectionName: currentSectionTemplate.name
+              });
+            }
+          }
+          lineCountInSection++;
         }
-        structuralLineCount++;
-      }
-    });
+      });
+    } else {
+      // Legacy flat map analysis
+      let structuralLineCount = 0;
+      lines.forEach((line, index) => {
+        const isStructural = line.trim().startsWith('[');
+        if (!isStructural && line.trim().length > 0) {
+          const target = template.pocketMap[structuralLineCount];
+          const actual = countLineSyllables(line);
+          
+          if (target !== undefined && actual !== target) {
+            newMismatches.push({
+              id: Math.random().toString(36).substr(2, 9),
+              lineIndex: index,
+              text: line,
+              actual,
+              target
+            });
+          }
+          structuralLineCount++;
+        }
+      });
+    }
 
     // Preserve existing suggestions if the line text hasn't changed
     setMismatches(prev => newMismatches.map(newM => {
@@ -58,11 +106,13 @@ export function PocketFitter() {
   }, [lyrics, currentTemplateId]);
 
   const fixLine = async (mismatch: Mismatch) => {
+    if (mismatch.isExtraLine) return; // Can't fix an extra line with AI rewriting
+
     setMismatches(prev => prev.map(m => m.id === mismatch.id ? { ...m, isFixing: true } : m));
     
     try {
       const { GoogleGenAI } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const lines = lyrics.split('\n');
       const startIdx = Math.max(0, mismatch.lineIndex - 2);
@@ -106,6 +156,14 @@ Output ONLY the rewritten line, nothing else. Do not include quotes or explanati
     }
   };
 
+  const removeLine = (mismatch: Mismatch) => {
+    const lines = lyrics.split('\n');
+    if (mismatch.lineIndex >= 0 && mismatch.lineIndex < lines.length) {
+      lines.splice(mismatch.lineIndex, 1);
+      setLyrics(lines.join('\n'));
+    }
+  };
+
   if (!template) {
     return (
       <div className="flex flex-col h-full bg-zinc-950 p-4">
@@ -139,21 +197,41 @@ Output ONLY the rewritten line, nothing else. Do not include quotes or explanati
           </div>
         ) : (
           mismatches.map((mismatch) => (
-            <div key={mismatch.id} className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/50">
+            <div key={mismatch.id} className={`p-3 rounded-lg border ${mismatch.isExtraLine ? 'border-amber-500/30 bg-amber-500/5' : 'border-zinc-800 bg-zinc-900/50'}`}>
               <div className="flex justify-between items-start mb-2">
-                <span className="text-xs font-mono text-zinc-500">Line {mismatch.lineIndex + 1}</span>
-                <div className="flex items-center gap-2 text-xs font-mono">
-                  <span className="text-red-400">{mismatch.actual}</span>
-                  <ArrowRight className="w-3 h-3 text-zinc-600" />
-                  <span className="text-emerald-400">{mismatch.target}</span>
-                </div>
+                <span className="text-xs font-mono text-zinc-500">
+                  Line {mismatch.lineIndex + 1} {mismatch.sectionName && `(${mismatch.sectionName})`}
+                </span>
+                {mismatch.isExtraLine ? (
+                  <div className="flex items-center gap-1 text-xs font-medium text-amber-400">
+                    <AlertTriangle className="w-3 h-3" />
+                    Extra Line
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className="text-red-400">{mismatch.actual}</span>
+                    <ArrowRight className="w-3 h-3 text-zinc-600" />
+                    <span className="text-emerald-400">{mismatch.target}</span>
+                  </div>
+                )}
               </div>
               
               <div className="text-sm text-zinc-300 mb-3 font-mono">
                 {mismatch.text}
               </div>
 
-              {mismatch.suggestion ? (
+              {mismatch.isExtraLine ? (
+                <div className="mt-2 pt-2 border-t border-amber-500/10">
+                  <p className="text-xs text-amber-400/80 mb-2">This line exceeds the expected length of the {mismatch.sectionName}. This often causes Suno to spill over into the next section.</p>
+                  <button
+                    onClick={() => removeLine(mismatch)}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-medium rounded transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                    Remove Line
+                  </button>
+                </div>
+              ) : mismatch.suggestion ? (
                 <div className="mt-3 pt-3 border-t border-zinc-800">
                   <p className="text-xs text-indigo-400 font-medium mb-1">Suggestion ({countLineSyllables(mismatch.suggestion)} syl):</p>
                   <div className="flex items-end justify-between gap-3">

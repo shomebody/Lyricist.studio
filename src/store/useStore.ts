@@ -12,7 +12,8 @@ export interface Template {
   id: string;
   name: string;
   genre: string;
-  pocketMap: Record<number, number>; // line index -> target syllables
+  pocketMap: Record<number, number>; // Legacy flat map
+  sections?: { name: string; lines: number[] }[]; // New section-based map
   defaultStylePrompt: string;
   description: string;
 }
@@ -487,7 +488,12 @@ export const TEMPLATES: Record<string, Template> = {
     pocketMap: {
       0: 8, 1: 8, 2: 8, 3: 8, // Verse
       4: 6, 5: 6, 6: 6, 7: 6, // Pre-chorus/Chorus
-    }
+    },
+    sections: [
+      { name: 'Verse', lines: [8, 8, 8, 8] },
+      { name: 'Pre-Chorus', lines: [6, 6, 6, 6] },
+      { name: 'Chorus', lines: [6, 6, 6, 6] }
+    ]
   },
   'tropical-pop-wordy': {
     id: 'tropical-pop-wordy',
@@ -498,7 +504,12 @@ export const TEMPLATES: Record<string, Template> = {
     pocketMap: {
       0: 11, 1: 11, 2: 11, 3: 11, // Verse (wordy)
       4: 6, 5: 6, 6: 6, 7: 6,     // Chorus (punchy)
-    }
+    },
+    sections: [
+      { name: 'Verse', lines: [11, 11, 11, 11] },
+      { name: 'Pre-Chorus', lines: [8, 8, 8, 8] },
+      { name: 'Chorus', lines: [6, 6, 6, 6] }
+    ]
   }
 };
 
@@ -531,9 +542,13 @@ interface AppState {
   setLyricIssues: (issues: LyricIssue[]) => void;
   isAnalyzing: boolean;
   setIsAnalyzing: (is: boolean) => void;
+
+  editorScrollToLine: ((line: number) => void) | null;
+  setEditorScrollToLine: (fn: ((line: number) => void) | null) => void;
+  scrollToLine: (line: number) => void;
 }
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
   user: null,
   setUser: (user) => set({ user }),
   
@@ -569,4 +584,13 @@ export const useStore = create<AppState>((set) => ({
   setLyricIssues: (issues) => set({ lyricIssues: issues }),
   isAnalyzing: false,
   setIsAnalyzing: (is) => set({ isAnalyzing: is }),
+
+  editorScrollToLine: null,
+  setEditorScrollToLine: (fn) => set({ editorScrollToLine: fn }),
+  scrollToLine: (line) => {
+    const { editorScrollToLine } = get();
+    if (editorScrollToLine) {
+      editorScrollToLine(line);
+    }
+  },
 }));

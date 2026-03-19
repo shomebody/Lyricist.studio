@@ -13,7 +13,8 @@ export function LyricDebugger() {
     setLyricIssues([]);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       // Add line numbers to help the AI pinpoint issues
       const numberedLyrics = lyrics

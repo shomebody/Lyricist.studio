@@ -248,27 +248,46 @@ export const useArrangementStore = create<ArrangementState>((set, get) => ({
     const mapped = mapLyricsToArrangement(lyrics, template, countLineSyllables);
     const stats = template ? computeArrangementStats(mapped, template) : null;
 
-    // Compute rhyme analysis per section
+    // Compute rhyme analysis per section block
     const rhymeAnalyses: RhymeAnalysis[] = [];
-    if (template) {
-      for (const section of template.sections) {
-        const sectionLines = mapped
-          .filter((l) => l.sectionId === section.id && !l.isStructuralTag && !l.isBlankLine && l.text.trim())
-          .map((l) => l.text);
-
-        if (sectionLines.length >= 2) {
-          const { pattern, groups } = analyzeRhymeScheme(sectionLines);
-          rhymeAnalyses.push({
-            sectionId: section.id,
-            sectionLabel: section.label,
-            pattern,
-            lineRhymeGroups: groups.map((g) => ({
-              ...g,
-              // Remap lineIndex from section-relative to absolute
-              lineIndex: g.lineIndex,
-            })),
-          });
+    
+    // Simple block parsing (similar to SectionArranger)
+    const blocks: { id: string, label: string, lines: { text: string, index: number }[] }[] = [];
+    let currentBlock: { id: string, label: string, lines: { text: string, index: number }[] } | null = null;
+    
+    const lines = lyrics.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const isTag = trimmed.startsWith('[') && trimmed.endsWith(']');
+      
+      if (isTag) {
+        if (currentBlock) blocks.push(currentBlock);
+        currentBlock = { id: `block-${i}`, label: trimmed, lines: [] };
+      } else {
+        if (!currentBlock) {
+          currentBlock = { id: `block-untagged`, label: 'Untagged', lines: [] };
         }
+        if (trimmed) {
+          currentBlock.lines.push({ text: trimmed, index: i });
+        }
+      }
+    }
+    if (currentBlock) blocks.push(currentBlock);
+
+    for (const block of blocks) {
+      if (block.lines.length >= 2) {
+        const { pattern, groups } = analyzeRhymeScheme(block.lines.map(l => l.text));
+        rhymeAnalyses.push({
+          sectionId: block.id,
+          sectionLabel: block.label,
+          pattern,
+          lineRhymeGroups: groups.map((g) => ({
+            ...g,
+            // Remap lineIndex from block-relative to absolute
+            lineIndex: block.lines[g.lineIndex].index,
+          })),
+        });
       }
     }
 

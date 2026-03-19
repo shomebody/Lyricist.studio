@@ -1,10 +1,10 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useMemo } from 'react';
 import Editor, { useMonaco } from '@monaco-editor/react';
 import { useStore, TEMPLATES } from '../store/useStore';
-import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
 import { countLineSyllables } from '../lib/syllables';
 import { validateSunoTags } from '../lib/suno';
 import { findCliches, ClicheMatch } from '../lib/cliches';
+import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
 import { exportForSuno } from '../lib/arrangement';
 import { ArrangementStatusBar } from './ArrangementStatusBar';
 import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2 } from 'lucide-react';
@@ -13,6 +13,7 @@ import { doc, setDoc, addDoc, collection } from 'firebase/firestore';
 
 export function LyricEditor() {
   const { lyrics, setLyrics, currentTemplateId, stylePrompt, setStylePrompt, user, currentProjectId, setCurrentProjectId, lyricIssues } = useStore();
+  const { currentArrangementId, showBarAnnotations, rhymeAnalyses } = useArrangementStore();
   const monaco = useMonaco();
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<string[]>([]);
@@ -23,6 +24,21 @@ export function LyricEditor() {
   const [isSaving, setIsSaving] = useState(false);
   const [isFormatting, setIsFormatting] = useState(false);
   const [projectTitle, setProjectTitle] = useState('Untitled Song');
+
+  const rhymeMap = useMemo(() => {
+    const map = new Map<number, { group: string, pattern: string, isFirstOfSection: boolean, sectionPattern: string }>();
+    rhymeAnalyses.forEach(analysis => {
+      analysis.lineRhymeGroups.forEach((g, idx) => {
+        map.set(g.lineIndex, {
+          group: g.group,
+          pattern: analysis.pattern,
+          isFirstOfSection: idx === 0,
+          sectionPattern: analysis.pattern
+        });
+      });
+    });
+    return map;
+  }, [rhymeAnalyses]);
 
   useEffect(() => {
     if (monaco) {
@@ -65,11 +81,11 @@ export function LyricEditor() {
     }
   }, [monaco]);
 
-  const updateDecorations = (matches: ClicheMatch[]) => {
+  const updateDecorations = () => {
     if (!editorRef.current || !monaco) return;
 
     const newDecorations = [
-      ...matches.map(match => ({
+      ...cliches.map(match => ({
         range: new monaco.Range(match.line, match.startCol, match.line, match.endCol),
         options: {
           isWholeLine: false,
@@ -88,6 +104,26 @@ export function LyricEditor() {
             hoverMessage: { value: `**${issue.severity.toUpperCase()}**: ${issue.issue}\n\n*Suggestion:* ${issue.suggestion}` }
           }
         };
+      }),
+      // Add rhyme end-word decorations
+      ...Array.from(rhymeMap.entries()).flatMap(([lineIndex, info]) => {
+        if (info.group === '-') return [];
+        const lineNum = lineIndex + 1;
+        const lineContent = editorRef.current.getModel()?.getLineContent(lineNum) || '';
+        const endWordMatch = lineContent.match(/\b\w+\b[^\w]*$/);
+        if (!endWordMatch) return [];
+        
+        const startCol = endWordMatch.index! + 1;
+        const endCol = startCol + endWordMatch[0].replace(/[^\w]+$/, '').length;
+        
+        return [{
+          range: new monaco.Range(lineNum, startCol, lineNum, endCol),
+          options: {
+            isWholeLine: false,
+            inlineClassName: `rhyme-group-${info.group}`,
+            hoverMessage: { value: `**Rhyme Group ${info.group}**\nSection Pattern: ${info.sectionPattern}` }
+          }
+        }];
       })
     ];
 
@@ -104,7 +140,6 @@ export function LyricEditor() {
     // Find Cliches
     const clicheMatches = findCliches(val);
     setCliches(clicheMatches);
-    updateDecorations(clicheMatches);
 
     // Calculate syllables per line
     const lines = val.split('\n');
@@ -139,12 +174,13 @@ export function LyricEditor() {
     handleEditorChange(lyrics);
   }, [currentTemplateId]);
 
-  // Re-calculate decorations when lyricIssues changes
+  // Re-calculate decorations when lyricIssues, cliches, or rhymeMap changes
   useEffect(() => {
-    updateDecorations(cliches);
-  }, [lyricIssues]);
+    updateDecorations();
+  }, [lyricIssues, cliches, rhymeMap]);
 
   const gutterRef = useRef<HTMLDivElement>(null);
+  const rhymeGutterRef = useRef<HTMLDivElement>(null);
 
   const handleEditorDidMount = (editor: any) => {
     editorRef.current = editor;
@@ -154,8 +190,24 @@ export function LyricEditor() {
       if (gutterRef.current) {
         gutterRef.current.scrollTop = e.scrollTop;
       }
+      if (rhymeGutterRef.current) {
+        rhymeGutterRef.current.scrollTop = e.scrollTop;
+      }
+    });
+
+    useStore.getState().setEditorScrollToLine((line: number) => {
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.focus();
     });
   };
+
+  // Clean up the scroll callback when unmounting
+  useEffect(() => {
+    return () => {
+      useStore.getState().setEditorScrollToLine(null);
+    };
+  }, []);
 
   const getSyllableColor = (actual: number, target?: number) => {
     if (target === undefined || actual === 0) return 'text-zinc-500';
@@ -163,6 +215,21 @@ export function LyricEditor() {
     if (diff === 0) return 'text-emerald-400 font-bold';
     if (diff === 1) return 'text-amber-400';
     return 'text-red-400';
+  };
+
+  const getRhymeColor = (group: string) => {
+    if (group === '-') return 'text-zinc-600';
+    const colors = [
+      'text-blue-400',
+      'text-emerald-400',
+      'text-purple-400',
+      'text-amber-400',
+      'text-pink-400',
+      'text-cyan-400',
+      'text-rose-400',
+    ];
+    const charCode = group.charCodeAt(0) - 65; // A = 0
+    return colors[charCode % colors.length];
   };
 
   const handleExport = () => {
@@ -213,7 +280,7 @@ export function LyricEditor() {
     setIsFormatting(true);
     try {
       const { GoogleGenAI } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-pro-preview',
@@ -244,7 +311,7 @@ ${lyrics}`
   const activeTemplate = currentTemplateId ? TEMPLATES[currentTemplateId] : null;
 
   return (
-    <div className="flex-1 flex flex-col h-full relative">
+    <div className="flex-1 flex flex-col h-full relative overflow-hidden">
       <style>{`
         .cliche-highlight {
           background-color: rgba(234, 179, 8, 0.2);
@@ -256,9 +323,16 @@ ${lyrics}`
         .issue-squiggly-error { text-decoration: underline wavy #ef4444; }
         .issue-squiggly-warning { text-decoration: underline wavy #f59e0b; }
         .issue-squiggly-info { text-decoration: underline wavy #3b82f6; }
+        .rhyme-group-A { color: #60a5fa; font-weight: 500; }
+        .rhyme-group-B { color: #34d399; font-weight: 500; }
+        .rhyme-group-C { color: #c084fc; font-weight: 500; }
+        .rhyme-group-D { color: #fbbf24; font-weight: 500; }
+        .rhyme-group-E { color: #f472b6; font-weight: 500; }
+        .rhyme-group-F { color: #22d3ee; font-weight: 500; }
+        .rhyme-group-G { color: #fb7185; font-weight: 500; }
       `}</style>
-      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-950/50">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-950/50 gap-2">
+        <div className="flex flex-wrap items-center gap-4">
           <input
             type="text"
             value={projectTitle}
@@ -288,7 +362,7 @@ ${lyrics}`
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button 
             onClick={handleFormatForSuno}
             disabled={isFormatting || !lyrics.trim()}
@@ -389,6 +463,32 @@ ${lyrics}`
               contextmenu: true,
             }}
           />
+        </div>
+
+        {/* Rhyme Scheme Gutter (Right) */}
+        <div 
+          ref={rhymeGutterRef}
+          className="w-24 bg-zinc-950 border-l border-zinc-800 flex flex-col items-start pl-3 py-4 text-xs font-mono overflow-hidden select-none"
+        >
+          {lineStats.map((stat, i) => {
+            const rhymeInfo = rhymeMap.get(i);
+            return (
+              <div key={i} className="h-[21px] flex items-center w-full gap-2">
+                {rhymeInfo && (
+                  <>
+                    <span className={`font-bold ${getRhymeColor(rhymeInfo.group)}`}>
+                      {rhymeInfo.group}
+                    </span>
+                    {rhymeInfo.isFirstOfSection && (
+                      <span className={`text-[10px] ${['FREE', 'UNKNOWN'].includes(rhymeInfo.sectionPattern) ? 'text-red-400/80' : 'text-zinc-600'}`}>
+                        {rhymeInfo.sectionPattern}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 

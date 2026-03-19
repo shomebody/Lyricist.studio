@@ -3,6 +3,7 @@ import { useStore, TEMPLATES } from '../store/useStore';
 import { useArrangementStore } from '../store/arrangementStore';
 import { BAR_TEMPLATES } from '../lib/arrangement';
 import { signInWithGoogle, logOut } from '../firebase';
+import { SectionArranger } from './SectionArranger';
 
 export function Sidebar() {
   const { currentTemplateId, setTemplateId, lyrics, user, projects, currentProjectId, setCurrentProjectId, setLyrics, setStylePrompt } = useStore();
@@ -18,12 +19,6 @@ export function Sidebar() {
     acc[template.genre].push(template);
     return acc;
   }, {} as Record<string, typeof templates>);
-
-  // Parse song structure from lyrics
-  const structure = lyrics
-    .split('\n')
-    .filter(line => line.trim().startsWith('[') && line.trim().endsWith(']'))
-    .map(line => line.trim().slice(1, -1));
 
   const handleNewProject = () => {
     setCurrentProjectId(null);
@@ -43,10 +38,10 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-64 flex-shrink-0 h-full bg-zinc-950 border-r border-zinc-800 flex flex-col">
-      <div className="p-4 border-b border-zinc-800 flex items-center gap-2">
-        <Sparkles className="w-5 h-5 text-indigo-400" />
-        <h1 className="font-bold text-lg tracking-tight">maxmartAIn</h1>
+    <aside className="h-full bg-zinc-950 flex flex-col overflow-hidden">
+      <div className="p-4 border-b border-zinc-800 flex items-center gap-2 overflow-hidden">
+        <Sparkles className="w-5 h-5 text-indigo-400 flex-shrink-0" />
+        <h1 className="font-bold text-lg tracking-tight truncate">maxmartAIn</h1>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -86,22 +81,7 @@ export function Sidebar() {
           </ul>
         </div>
 
-        {structure.length > 0 && (
-          <div>
-            <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3 flex items-center gap-2">
-              <ListTree className="w-4 h-4" />
-              Song Structure
-            </h2>
-            <div className="flex flex-col gap-1 px-2">
-              {structure.map((section, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs text-zinc-400">
-                  <div className="w-1.5 h-1.5 rounded-full bg-indigo-500/50" />
-                  {section}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <SectionArranger />
 
         <div>
           <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3 flex items-center gap-2">
@@ -191,9 +171,9 @@ export function Sidebar() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 overflow-hidden">
               {user.photoURL ? (
-                <img src={user.photoURL} alt="Avatar" className="w-6 h-6 rounded-full" />
+                <img src={user.photoURL} alt="Avatar" className="w-6 h-6 rounded-full flex-shrink-0" />
               ) : (
-                <div className="w-6 h-6 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400 text-xs font-bold">
+                <div className="w-6 h-6 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400 text-xs font-bold flex-shrink-0">
                   {user.email?.[0].toUpperCase()}
                 </div>
               )}

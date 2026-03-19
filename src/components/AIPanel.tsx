@@ -1,17 +1,18 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, Bot, User, Zap, BookOpen, Bug, Ruler, History } from 'lucide-react';
+import { Send, Sparkles, Bot, User, Zap, BookOpen, Bug, Ruler, History, Wrench } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { GoogleGenAI } from '@google/genai';
 import { RhymeDictionary } from './RhymeDictionary';
 import { LyricDebugger } from './LyricDebugger';
 import { PocketFitter } from './PocketFitter';
 import { VersionHistory } from './VersionHistory';
+import { SongFinisher } from './SongFinisher';
 
 export function AIPanel() {
   const { chatHistory, addMessage, lyrics, currentTemplateId } = useStore();
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'ai' | 'rhymes' | 'debug' | 'pocket' | 'history'>('ai');
+  const [activeTab, setActiveTab] = useState<'ai' | 'rhymes' | 'debug' | 'pocket' | 'history' | 'finish'>('ai');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -113,12 +114,12 @@ Current Template: ${currentTemplateId || 'None'}
   ];
 
   return (
-    <aside className="w-80 flex-shrink-0 h-full bg-zinc-950 border-l border-zinc-800 flex flex-col">
+    <aside className="h-full bg-zinc-950 flex flex-col overflow-hidden">
       <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
-        <div className="flex bg-zinc-900 p-1 rounded-lg w-full">
+        <div className="flex bg-zinc-900 p-1 rounded-lg w-full overflow-x-auto no-scrollbar">
           <button
             onClick={() => setActiveTab('ai')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'ai'
                 ? 'bg-zinc-800 text-indigo-400 shadow-sm'
                 : 'text-zinc-500 hover:text-zinc-300'
@@ -129,7 +130,7 @@ Current Template: ${currentTemplateId || 'None'}
           </button>
           <button
             onClick={() => setActiveTab('debug')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'debug'
                 ? 'bg-zinc-800 text-indigo-400 shadow-sm'
                 : 'text-zinc-500 hover:text-zinc-300'
@@ -140,7 +141,7 @@ Current Template: ${currentTemplateId || 'None'}
           </button>
           <button
             onClick={() => setActiveTab('pocket')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'pocket'
                 ? 'bg-zinc-800 text-indigo-400 shadow-sm'
                 : 'text-zinc-500 hover:text-zinc-300'
@@ -151,7 +152,7 @@ Current Template: ${currentTemplateId || 'None'}
           </button>
           <button
             onClick={() => setActiveTab('rhymes')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'rhymes'
                 ? 'bg-zinc-800 text-indigo-400 shadow-sm'
                 : 'text-zinc-500 hover:text-zinc-300'
@@ -162,7 +163,7 @@ Current Template: ${currentTemplateId || 'None'}
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'history'
                 ? 'bg-zinc-800 text-indigo-400 shadow-sm'
                 : 'text-zinc-500 hover:text-zinc-300'
@@ -170,6 +171,17 @@ Current Template: ${currentTemplateId || 'None'}
           >
             <History className="w-3.5 h-3.5" />
             History
+          </button>
+          <button
+            onClick={() => setActiveTab('finish')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+              activeTab === 'finish'
+                ? 'bg-zinc-800 text-indigo-400 shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            <Wrench className="w-3.5 h-3.5" />
+            Finish
           </button>
         </div>
       </div>
@@ -258,6 +270,11 @@ Current Template: ${currentTemplateId || 'None'}
         <PocketFitter />
       ) : activeTab === 'history' ? (
         <VersionHistory />
+      ) : activeTab === 'finish' ? (
+        <SongFinisher onAction={(prompt) => {
+          setActiveTab('ai');
+          handleSend(prompt);
+        }} />
       ) : (
         <LyricDebugger />
       )}

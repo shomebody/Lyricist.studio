@@ -648,7 +648,7 @@ export function migrateOldTemplate(old: {
 // ─── Rhyme Scheme Detection ─────────────────────────────────────────
 // Analyze end-words within a section to detect rhyme patterns
 
-export type RhymePattern = 'AABB' | 'ABAB' | 'ABCB' | 'ABBA' | 'AAAA' | 'FREE' | 'UNKNOWN';
+export type RhymePattern = 'AABB' | 'ABAB' | 'ABCB' | 'ABBA' | 'FREE' | 'UNKNOWN';
 
 export interface RhymeAnalysis {
   sectionId: string;
@@ -733,19 +733,11 @@ export function analyzeRhymeScheme(lines: string[]): {
   // Detect known patterns from the first 4 lines
   const pattern4 = groups.slice(0, 4).map(g => g.group).join('');
   let pattern: RhymePattern = 'FREE';
-  
-  if (pattern4 === 'AABB' || pattern4 === 'CCDD' || pattern4 === 'EEFF') pattern = 'AABB';
-  else if (pattern4 === 'ABAB' || pattern4 === 'CDCD' || pattern4 === 'EFEF') pattern = 'ABAB';
-  else if (pattern4 === 'ABCB' || pattern4 === 'CDED' || pattern4 === 'EFEG') pattern = 'ABCB'; // EFEG is not quite right, but ABCB is typical
-  else if (pattern4 === 'ABBA' || pattern4 === 'CDDC' || pattern4 === 'EFFE') pattern = 'ABBA';
-  else if (pattern4 === 'AAAA' || pattern4 === 'BBBB' || pattern4 === 'CCCC') pattern = 'AAAA';
+  if (pattern4 === 'AABB') pattern = 'AABB';
+  else if (pattern4 === 'ABAB') pattern = 'ABAB';
+  else if (pattern4 === 'ABCB') pattern = 'ABCB';
+  else if (pattern4 === 'ABBA') pattern = 'ABBA';
   else if (groups.length < 4) pattern = 'UNKNOWN';
 
-  // If the first 4 lines are FREE, but the whole thing has some structure, we could detect it,
-  // but for now we'll just return the pattern of the first 4 lines.
-  
-  // Let's normalize the pattern string for the whole section if we want to be fancy,
-  // but returning the 4-line base pattern is standard.
-  
   return { pattern, groups };
 }
