@@ -1,0 +1,95 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "preferences": { "type": "object" },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "UserSubscription": {
+      "title": "User Subscription",
+      "description": "User subscription details",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "plan": { "type": "string", "enum": ["free", "pro", "studio"] },
+        "geminiCreditsUsed": { "type": "number" },
+        "geminiCreditsLimit": { "type": "number" }
+      },
+      "required": ["uid", "plan", "geminiCreditsUsed", "geminiCreditsLimit"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "A songwriting project",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "title": { "type": "string" },
+        "genre": { "type": "string" },
+        "bpm": { "type": "number" },
+        "key": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" },
+        "status": { "type": "string", "enum": ["draft", "in-progress", "suno-testing", "final"] },
+        "lyrics": {
+          "type": "object",
+          "properties": {
+            "raw": { "type": "string" },
+            "formatted": { "type": "string" },
+            "sunoExport": { "type": "string" },
+            "stylePrompt": { "type": "string" }
+          }
+        },
+        "arrangement": {
+          "type": "object",
+          "properties": {
+            "templateId": { "type": "string" },
+            "sectionOrder": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      },
+      "required": ["uid", "title", "createdAt", "updatedAt"]
+    },
+    "Template": {
+      "title": "Genre Template",
+      "description": "A genre-specific songwriting template",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "genre": { "type": "string" },
+        "bpm": { "type": "number" },
+        "key": { "type": "string" },
+        "timeSignature": { "type": "string" },
+        "description": { "type": "string" },
+        "stylePrompt": { "type": "object" },
+        "pocketMap": { "type": "object" }
+      },
+      "required": ["name", "genre"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "User profiles"
+    },
+    "/users/{userId}/subscription/current": {
+      "schema": { "$ref": "UserSubscription" },
+      "description": "User subscription details"
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "Project" },
+      "description": "User songwriting projects"
+    },
+    "/templates/{templateId}": {
+      "schema": { "$ref": "Template" },
+      "description": "Global genre templates"
+    }
+  }
+}

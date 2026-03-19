@@ -1,0 +1,111 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // Collection: projects
+    // Document ID: {projectId}
+    // Fields:
+    //   - uid: string (required)
+    //   - title: string (required)
+    //   - createdAt: timestamp (required, immutable)
+    //   - updatedAt: timestamp (required)
+    //   - lyrics: map (optional)
+    //   - arrangement: map (optional)
+    //
+    // Collection: templates
+    // Document ID: {templateId}
+    // Fields:
+    //   - name: string (required)
+    //   - genre: string (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Domain Validators
+    function isValidUserProfile(data) {
+      return data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
+             data.email is string && isValidEmail(data.email) && data.email.size() < 200 &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidProject(data) {
+      return data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp &&
+             (!('lyrics' in data) || data.lyrics is map) &&
+             (!('arrangement' in data) || data.arrangement is map);
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && hasRequiredFields(['uid', 'email', 'createdAt']) && isValidUserProfile(request.resource.data) && uidUnchanged();
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data) && uidNotModified() && areImmutableFieldsUnchanged(['createdAt']);
+      allow delete: if isOwner(userId);
+      
+      match /subscription/current {
+        allow read: if isOwner(userId);
+        // Subscriptions should ideally be managed by a backend/Cloud Function, but allowing read for the user.
+        allow write: if false; 
+      }
+    }
+
+    match /projects/{projectId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && hasRequiredFields(['uid', 'title', 'createdAt', 'updatedAt']) && isValidProject(request.resource.data) && uidUnchanged();
+      allow update: if isDocOwner() && isValidProject(request.resource.data) && uidNotModified() && areImmutableFieldsUnchanged(['createdAt']);
+      allow delete: if isDocOwner();
+    }
+
+    match /templates/{templateId} {
+      allow read: if true; // Templates are public read-only
+      allow write: if false; // Only admins (via backend) can write templates
+    }
+  }
+}
