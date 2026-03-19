@@ -47,14 +47,15 @@ export function LyricEditor() {
   const [projectTitle, setProjectTitle] = useState('Untitled Song');
 
   const rhymeMap = useMemo(() => {
-    const map = new Map<number, { group: string, pattern: string, isFirstOfSection: boolean, sectionPattern: string }>();
+    const map = new Map<number, { group: string, pattern: string, isFirstOfSection: boolean, sectionPattern: string, rhymeType: string }>();
     rhymeAnalyses.forEach(analysis => {
       analysis.lineRhymeGroups.forEach((g, idx) => {
         map.set(g.lineIndex, {
           group: g.group,
           pattern: analysis.pattern,
           isFirstOfSection: idx === 0,
-          sectionPattern: analysis.pattern
+          sectionPattern: analysis.pattern,
+          rhymeType: g.rhymeType || 'none',
         });
       });
     });
@@ -185,7 +186,7 @@ export function LyricEditor() {
         options: {
           isWholeLine: false,
           inlineClassName: `rhyme-group-${info.group}`,
-          hoverMessage: { value: `**Rhyme Group ${info.group}**\nSection Pattern: ${info.sectionPattern}` },
+          hoverMessage: { value: `**Rhyme Group ${info.group}** (${info.rhymeType})\nSection Pattern: ${info.sectionPattern}` },
         },
       });
     }
@@ -219,12 +220,20 @@ export function LyricEditor() {
       const rhymeInfo = rhymeMap.get(lineNum - 1); // rhymeMap is 0-indexed
       if (rhymeInfo && rhymeInfo.group !== '-') {
         const rhymeColor = RHYME_COLORS[rhymeInfo.group] || '#71717a';
+        // Show rhyme type indicator: perfect = bold, family/slant = normal, assonance = dim
+        const typeIndicator = rhymeInfo.rhymeType === 'perfect' ? '' :
+          rhymeInfo.rhymeType === 'family' ? '~' :
+          rhymeInfo.rhymeType === 'slant' ? '≈' :
+          rhymeInfo.rhymeType === 'assonance' ? '≈' : '';
         const rhymeLabel = rhymeInfo.isFirstOfSection
-          ? `'  ${rhymeInfo.group} ${rhymeInfo.sectionPattern}'`
-          : `'  ${rhymeInfo.group}'`;
+          ? `'  ${typeIndicator}${rhymeInfo.group} ${rhymeInfo.sectionPattern}'`
+          : `'  ${typeIndicator}${rhymeInfo.group}'`;
+        const opacity = rhymeInfo.rhymeType === 'perfect' ? '1' :
+          rhymeInfo.rhymeType === 'family' ? '0.85' : '0.65';
+        const weight = rhymeInfo.rhymeType === 'perfect' ? '700' : '500';
         const rhymeClassName = `rhyme-after-${lineNum}`;
         try {
-          sheet.insertRule(`.${rhymeClassName}::after { content: ${rhymeLabel}; color: ${rhymeColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: 700; opacity: 0.8; }`, sheet.cssRules.length);
+          sheet.insertRule(`.${rhymeClassName}::after { content: ${rhymeLabel}; color: ${rhymeColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: ${weight}; opacity: ${opacity}; }`, sheet.cssRules.length);
         } catch { /* ignore */ }
 
         const lc = model.getLineContent(lineNum) || '';

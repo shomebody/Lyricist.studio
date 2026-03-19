@@ -654,7 +654,7 @@ export interface RhymeAnalysis {
   sectionId: string;
   sectionLabel: string;
   pattern: RhymePattern;
-  lineRhymeGroups: { lineIndex: number; group: string; endWord: string }[];
+  lineRhymeGroups: { lineIndex: number; group: string; endWord: string; rhymeType?: RhymeType }[];
 }
 
 /**
@@ -667,27 +667,178 @@ function getEndWord(line: string): string {
 }
 
 /**
- * Very simple phonetic rhyme check.
- * Checks if two words share the same ending sounds (last 2-3 chars).
- * This is intentionally naive — a proper implementation would use a pronunciation
- * dictionary. Good enough for visual feedback.
+ * Rhyme type classification.
+ */
+export type RhymeType = 'perfect' | 'family' | 'slant' | 'assonance' | 'none';
+
+export interface RhymeResult {
+  isRhyme: boolean;
+  type: RhymeType;
+}
+
+// ─── Phonetic family maps (Pat Pattison framework) ──────────────────
+// Consonants in the same family count as rhyming
+
+const PHONETIC_FAMILIES: string[][] = [
+  // Plosives: voiced / unvoiced pairs
+  ['b', 'p'], ['d', 't'], ['g', 'k'],
+  // Fricatives: voiced / unvoiced pairs
+  ['v', 'f'], ['z', 's'],
+  // Nasals
+  ['m', 'n'],
+];
+
+function getPhoneticFamily(char: string): number {
+  for (let i = 0; i < PHONETIC_FAMILIES.length; i++) {
+    if (PHONETIC_FAMILIES[i].includes(char)) return i;
+  }
+  return -1;
+}
+
+function consonantsInSameFamily(c1: string, c2: string): boolean {
+  if (c1 === c2) return true;
+  const f1 = getPhoneticFamily(c1);
+  const f2 = getPhoneticFamily(c2);
+  return f1 >= 0 && f1 === f2;
+}
+
+/**
+ * Extract vowels from a word.
+ */
+function extractVowels(word: string): string {
+  return word.replace(/[^aeiou]/g, '');
+}
+
+/**
+ * Extract trailing consonant cluster from a word.
+ */
+function trailingConsonants(word: string): string {
+  const match = word.match(/[^aeiou]+$/);
+  return match ? match[0] : '';
+}
+
+/**
+ * Advanced rhyme check with type classification.
+ * Returns both whether words rhyme and what type of rhyme it is.
+ *
+ * Checks in order of strength:
+ * 1. Perfect rhyme: shared suffix of 2+ chars including vowel+consonant
+ * 2. Multi-syllable rhyme: last 2-3 syllables match
+ * 3. Family rhyme: same vowel sound + consonants in same phonetic family
+ * 4. Slant/assonance: shared vowel patterns
  */
 export function simpleRhymeCheck(word1: string, word2: string): boolean {
-  if (!word1 || !word2) return false;
-  if (word1 === word2) return true;
+  return checkRhyme(word1, word2).isRhyme;
+}
 
-  const w1 = word1.toLowerCase();
-  const w2 = word2.toLowerCase();
+export function checkRhyme(word1: string, word2: string): RhymeResult {
+  if (!word1 || !word2) return { isRhyme: false, type: 'none' };
 
-  // Check suffix matches (2 and 3 char)
-  if (w1.length >= 3 && w2.length >= 3 && w1.slice(-3) === w2.slice(-3)) return true;
-  if (w1.length >= 2 && w2.length >= 2 && w1.slice(-2) === w2.slice(-2)) return true;
+  const w1 = word1.toLowerCase().replace(/[^a-z]/g, '');
+  const w2 = word2.toLowerCase().replace(/[^a-z]/g, '');
 
-  // Common slant rhyme vowel patterns
-  const vowelPattern = (w: string) => w.replace(/[^aeiou]/g, '');
-  if (vowelPattern(w1).length >= 2 && vowelPattern(w1).slice(-2) === vowelPattern(w2).slice(-2)) return true;
+  if (!w1 || !w2) return { isRhyme: false, type: 'none' };
+  if (w1 === w2) return { isRhyme: true, type: 'perfect' };
 
-  return false;
+  // 1. Perfect rhyme: check shared suffixes from longest to shortest
+  const maxSuffix = Math.min(w1.length, w2.length);
+  let sharedSuffixLen = 0;
+  for (let i = 1; i <= maxSuffix; i++) {
+    if (w1.slice(-i) === w2.slice(-i)) {
+      sharedSuffixLen = i;
+    } else {
+      break;
+    }
+  }
+
+  // Perfect rhyme: shared suffix of 2+ chars that contains at least one vowel
+  if (sharedSuffixLen >= 2) {
+    const suffix = w1.slice(-sharedSuffixLen);
+    const hasVowel = /[aeiou]/.test(suffix);
+    if (hasVowel) {
+      return { isRhyme: true, type: 'perfect' };
+    }
+  }
+
+  // 2. Multi-syllable rhyme: check if last 2+ syllable chunks match
+  // Split into rough syllable chunks by vowel groups
+  const syllableChunks = (w: string): string[] => {
+    const chunks: string[] = [];
+    let current = '';
+    let lastWasVowel = false;
+    for (const ch of w) {
+      const isVowel = 'aeiou'.includes(ch);
+      if (isVowel && !lastWasVowel && current.length > 0) {
+        // Start of new syllable
+        chunks.push(current);
+        current = ch;
+      } else {
+        current += ch;
+      }
+      lastWasVowel = isVowel;
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  };
+
+  const chunks1 = syllableChunks(w1);
+  const chunks2 = syllableChunks(w2);
+
+  // Compare last N syllable chunks
+  if (chunks1.length >= 2 && chunks2.length >= 2) {
+    const last2_1 = chunks1.slice(-2).join('');
+    const last2_2 = chunks2.slice(-2).join('');
+    if (last2_1 === last2_2) {
+      return { isRhyme: true, type: 'perfect' };
+    }
+  }
+
+  // 3. Family rhyme: same stressed vowel + consonants in same phonetic family
+  const vowels1 = extractVowels(w1);
+  const vowels2 = extractVowels(w2);
+  const trail1 = trailingConsonants(w1);
+  const trail2 = trailingConsonants(w2);
+
+  // Check if trailing consonants are in the same phonetic family
+  if (vowels1.length >= 1 && vowels2.length >= 1) {
+    const lastVowel1 = vowels1.slice(-1);
+    const lastVowel2 = vowels2.slice(-1);
+    const sameLastVowel = lastVowel1 === lastVowel2;
+
+    // Family rhyme: same last vowel + trailing consonants in same family
+    if (sameLastVowel && trail1.length > 0 && trail2.length > 0) {
+      // Check if the last consonant of each is in the same family
+      const lastC1 = trail1.slice(-1);
+      const lastC2 = trail2.slice(-1);
+      if (consonantsInSameFamily(lastC1, lastC2)) {
+        return { isRhyme: true, type: 'family' };
+      }
+    }
+
+    // Also check: if trailing consonants match but vowels are in same family
+    if (trail1 === trail2 && trail1.length > 0) {
+      // Same ending consonants = strong slant rhyme
+      return { isRhyme: true, type: 'slant' };
+    }
+  }
+
+  // 4. Assonance: shared last 2 vowel sounds
+  if (vowels1.length >= 2 && vowels2.length >= 2) {
+    if (vowels1.slice(-2) === vowels2.slice(-2)) {
+      return { isRhyme: true, type: 'assonance' };
+    }
+  }
+
+  // 5. Slant rhyme: last vowel matches + at least some consonant similarity
+  if (vowels1.length >= 1 && vowels2.length >= 1) {
+    const lastVowel1 = vowels1.slice(-1);
+    const lastVowel2 = vowels2.slice(-1);
+    if (lastVowel1 === lastVowel2 && trail1.length > 0 && trail2.length > 0) {
+      return { isRhyme: true, type: 'slant' };
+    }
+  }
+
+  return { isRhyme: false, type: 'none' };
 }
 
 /**
@@ -696,10 +847,10 @@ export function simpleRhymeCheck(word1: string, word2: string): boolean {
  */
 export function analyzeRhymeScheme(lines: string[]): {
   pattern: RhymePattern;
-  groups: { lineIndex: number; group: string; endWord: string }[];
+  groups: { lineIndex: number; group: string; endWord: string; rhymeType?: RhymeType }[];
 } {
   const endWords = lines.map(getEndWord);
-  const groups: { lineIndex: number; group: string; endWord: string }[] = [];
+  const groups: { lineIndex: number; group: string; endWord: string; rhymeType?: RhymeType }[] = [];
 
   let nextGroup = 'A';
   const wordToGroup: Record<string, string> = {};
@@ -713,18 +864,22 @@ export function analyzeRhymeScheme(lines: string[]): {
 
     // Check if this word rhymes with any previously seen word
     let foundGroup: string | null = null;
+    let bestRhymeType: RhymeType = 'none';
     for (const [prevWord, group] of Object.entries(wordToGroup)) {
-      if (simpleRhymeCheck(word, prevWord)) {
+      const result = checkRhyme(word, prevWord);
+      if (result.isRhyme) {
         foundGroup = group;
-        break;
+        bestRhymeType = result.type;
+        // Prefer perfect rhymes over weaker types
+        if (result.type === 'perfect') break;
       }
     }
 
     if (foundGroup) {
-      groups.push({ lineIndex: i, group: foundGroup, endWord: word });
+      groups.push({ lineIndex: i, group: foundGroup, endWord: word, rhymeType: bestRhymeType });
       wordToGroup[word] = foundGroup;
     } else {
-      groups.push({ lineIndex: i, group: nextGroup, endWord: word });
+      groups.push({ lineIndex: i, group: nextGroup, endWord: word, rhymeType: 'none' });
       wordToGroup[word] = nextGroup;
       nextGroup = String.fromCharCode(nextGroup.charCodeAt(0) + 1);
     }
