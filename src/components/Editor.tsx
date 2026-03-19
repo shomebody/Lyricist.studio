@@ -112,6 +112,10 @@ export function LyricEditor() {
   const updateDecorations = () => {
     if (!editorRef.current || !monaco) return;
 
+    const model = editorRef.current.getModel();
+    if (!model) return;
+    const totalLines = model.getLineCount();
+
     // Clear and rebuild gutter CSS
     clearGutterStyles();
     const sheet = getGutterStyleSheet();
@@ -120,6 +124,7 @@ export function LyricEditor() {
 
     // Cliché decorations
     for (const match of cliches) {
+      if (match.line > totalLines) continue;
       newDecorations.push({
         range: new monaco.Range(match.line, match.startCol, match.line, match.endCol),
         options: {
@@ -132,7 +137,8 @@ export function LyricEditor() {
 
     // Issue decorations
     for (const issue of lyricIssues) {
-      const lineContent = editorRef.current.getModel()?.getLineContent(issue.line) || '';
+      if (issue.line > totalLines) continue;
+      const lineContent = model.getLineContent(issue.line) || '';
       newDecorations.push({
         range: new monaco.Range(issue.line, 1, issue.line, lineContent.length + 1),
         options: {
@@ -147,10 +153,10 @@ export function LyricEditor() {
     // Section background color decorations (Fix C)
     for (const ml of mappedLines) {
       if (!ml.sectionType || ml.isBlankLine) continue;
+      const lineNum = ml.lineIndex + 1;
+      if (lineNum > totalLines) continue;
       const bgColor = SECTION_BG_COLORS[ml.sectionType as SectionType];
       if (!bgColor) continue;
-
-      const lineNum = ml.lineIndex + 1;
       // Structural tag lines get a stronger tint
       const opacity = ml.isStructuralTag ? 3 : 1;
       const sectionBgClass = `section-bg-${ml.sectionType}-${opacity}`;
@@ -168,7 +174,8 @@ export function LyricEditor() {
     for (const [lineIndex, info] of rhymeMap.entries()) {
       if (info.group === '-') continue;
       const lineNum = lineIndex + 1;
-      const lineContent = editorRef.current.getModel()?.getLineContent(lineNum) || '';
+      if (lineNum > totalLines) continue;
+      const lineContent = model.getLineContent(lineNum) || '';
       const endWordMatch = lineContent.match(/\b\w+\b[^\w]*$/);
       if (!endWordMatch) continue;
       const startCol = endWordMatch.index! + 1;
@@ -188,7 +195,7 @@ export function LyricEditor() {
     // and linesDecorationsClassName with CSS ::after for rhyme letters
     for (const stat of lineStats) {
       const lineNum = stat.line;
-      if (stat.syllables <= 0) continue;
+      if (stat.syllables <= 0 || lineNum > totalLines) continue;
 
       // Syllable count — shown in glyph margin via ::before
       const sylText = stat.target !== undefined
@@ -220,9 +227,9 @@ export function LyricEditor() {
           sheet.insertRule(`.${rhymeClassName}::after { content: ${rhymeLabel}; color: ${rhymeColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: 700; opacity: 0.8; }`, sheet.cssRules.length);
         } catch { /* ignore */ }
 
-        const lineContent = editorRef.current.getModel()?.getLineContent(lineNum) || '';
+        const lc = model.getLineContent(lineNum) || '';
         newDecorations.push({
-          range: new monaco.Range(lineNum, lineContent.length + 1, lineNum, lineContent.length + 1),
+          range: new monaco.Range(lineNum, lc.length + 1, lineNum, lc.length + 1),
           options: {
             afterContentClassName: rhymeClassName,
           },
@@ -265,7 +272,9 @@ export function LyricEditor() {
   }, [currentTemplateId]);
 
   useEffect(() => {
-    updateDecorations();
+    // Use requestAnimationFrame to ensure Monaco model is updated before decorating
+    const raf = requestAnimationFrame(() => updateDecorations());
+    return () => cancelAnimationFrame(raf);
   }, [lyricIssues, cliches, rhymeMap, lineStats, mappedLines]);
 
   const handleEditorDidMount = (editor: any) => {
@@ -348,7 +357,10 @@ Lyrics:
 ${lyrics}`
       });
       if (response.text) {
-        setLyrics(response.text.trim());
+        const formatted = response.text.trim();
+        // Force full reanalysis after format — setLyrics alone doesn't
+        // recompute syllables, clichés, or arrangement mapping
+        handleEditorChange(formatted);
       }
     } catch (error) {
       console.error('Error formatting lyrics:', error);
