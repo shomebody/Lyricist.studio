@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, 'ai-studio-61946074-eafc-41c2-8621-f582e6d94226');
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 

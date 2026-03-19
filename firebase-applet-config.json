@@ -1,10 +1,9 @@
 {
-  "projectId": "tcf-22",
-  "appId": "1:384036463366:web:6fa904a6abc50c8c07b487",
-  "apiKey": "AIzaSyAOsu736QLOW-DQPHbV0DpRTXArxTWEME8",
-  "authDomain": "tcf-22.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-61946074-eafc-41c2-8621-f582e6d94226",
-  "storageBucket": "tcf-22.firebasestorage.app",
-  "messagingSenderId": "384036463366",
-  "measurementId": ""
+  "projectId": "lyricstudio-d06f2",
+  "appId": "1:678453334434:web:847ce5fef5d7159fcca2fb",
+  "apiKey": "AIzaSyD6gOS9FjUrSaBM1133XOKp3JEL_vyFIR8",
+  "authDomain": "lyricstudio-d06f2.firebaseapp.com",
+  "storageBucket": "lyricstudio-d06f2.firebasestorage.app",
+  "messagingSenderId": "678453334434",
+  "measurementId": "G-NJXYSQQM9G"
 }
