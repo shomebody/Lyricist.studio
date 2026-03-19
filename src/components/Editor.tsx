@@ -11,6 +11,27 @@ import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2 } from 'lu
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { doc, setDoc, addDoc, collection } from 'firebase/firestore';
 
+// ─── Dynamic CSS for gutter decorations ─────────────────────────────
+// We inject CSS rules dynamically for each line's syllable count and rhyme letter.
+// Monaco decorations use linesDecorationsClassName with ::before/::after pseudo-elements.
+
+let _gutterStyleSheet: CSSStyleSheet | null = null;
+function getGutterStyleSheet(): CSSStyleSheet {
+  if (_gutterStyleSheet) return _gutterStyleSheet;
+  const style = document.createElement('style');
+  style.id = 'lyric-gutter-styles';
+  document.head.appendChild(style);
+  _gutterStyleSheet = style.sheet!;
+  return _gutterStyleSheet;
+}
+
+function clearGutterStyles() {
+  const sheet = getGutterStyleSheet();
+  while (sheet.cssRules.length > 0) {
+    sheet.deleteRule(0);
+  }
+}
+
 export function LyricEditor() {
   const { lyrics, setLyrics, currentTemplateId, stylePrompt, setStylePrompt, user, currentProjectId, setCurrentProjectId, lyricIssues } = useStore();
   const { currentArrangementId, showBarAnnotations, rhymeAnalyses } = useArrangementStore();
@@ -42,37 +63,29 @@ export function LyricEditor() {
 
   useEffect(() => {
     if (monaco) {
-      // Register a custom language for Suno lyrics
       monaco.languages.register({ id: 'suno-lyrics' });
-
-      // Define syntax highlighting rules
       monaco.languages.setMonarchTokensProvider('suno-lyrics', {
         tokenizer: {
           root: [
-            // Structural tags: [Verse 1], [Chorus]
             [/\[.*?\]/, 'custom-structural-tag'],
-            // Performance cues: (whispered)
             [/\(.*?\)/, 'custom-performance-cue'],
-            // Pipe separators
             [/\|/, 'custom-pipe'],
-            // Master Arrangement Summary marker
             [/^\*\*\*.*$/, 'custom-mas-marker'],
           ],
         },
       });
 
-      // Define a custom theme
       monaco.editor.defineTheme('suno-dark', {
         base: 'vs-dark',
         inherit: true,
         rules: [
-          { token: 'custom-structural-tag', foreground: '818cf8', fontStyle: 'bold' }, // Indigo 400
-          { token: 'custom-performance-cue', foreground: 'a1a1aa', fontStyle: 'italic' }, // Zinc 400
-          { token: 'custom-pipe', foreground: 'f472b6' }, // Pink 400
-          { token: 'custom-mas-marker', foreground: 'fbbf24', fontStyle: 'bold' }, // Amber 400
+          { token: 'custom-structural-tag', foreground: '818cf8', fontStyle: 'bold' },
+          { token: 'custom-performance-cue', foreground: 'a1a1aa', fontStyle: 'italic' },
+          { token: 'custom-pipe', foreground: 'f472b6' },
+          { token: 'custom-mas-marker', foreground: 'fbbf24', fontStyle: 'bold' },
         ],
         colors: {
-          'editor.background': '#18181b', // Zinc 900
+          'editor.background': '#18181b',
           'editor.lineHighlightBackground': '#27272a50',
           'editorLineNumber.foreground': '#52525b',
           'editorGutter.background': '#18181b',
@@ -81,51 +94,121 @@ export function LyricEditor() {
     }
   }, [monaco]);
 
+  // ─── Syllable color logic ───────────────────────────────────────────
+  const getSyllableColorHex = (actual: number, target?: number): string => {
+    if (target === undefined || actual === 0) return '#71717a'; // zinc-500
+    const diff = Math.abs(actual - target);
+    if (diff === 0) return '#34d399'; // emerald-400
+    if (diff === 1) return '#fbbf24'; // amber-400
+    return '#f87171'; // red-400
+  };
+
+  const RHYME_COLORS: Record<string, string> = {
+    A: '#60a5fa', B: '#34d399', C: '#c084fc', D: '#fbbf24',
+    E: '#f472b6', F: '#22d3ee', G: '#fb7185',
+  };
+
+  // ─── Update all decorations (clichés, issues, syllable gutter, rhyme gutter) ──
   const updateDecorations = () => {
     if (!editorRef.current || !monaco) return;
 
-    const newDecorations = [
-      ...cliches.map(match => ({
+    // Clear and rebuild gutter CSS
+    clearGutterStyles();
+    const sheet = getGutterStyleSheet();
+
+    const newDecorations: any[] = [];
+
+    // Cliché decorations
+    for (const match of cliches) {
+      newDecorations.push({
         range: new monaco.Range(match.line, match.startCol, match.line, match.endCol),
         options: {
           isWholeLine: false,
           className: 'cliche-highlight',
-          hoverMessage: { value: '**AI Slop Detected:** This phrase is heavily overused in AI-generated lyrics. Consider replacing it with something more specific.' }
-        }
-      })),
-      ...lyricIssues.map(issue => {
-        const lineContent = editorRef.current.getModel()?.getLineContent(issue.line) || '';
-        return {
-          range: new monaco.Range(issue.line, 1, issue.line, lineContent.length + 1),
-          options: {
-            isWholeLine: true,
-            className: `issue-bg-${issue.severity}`,
-            inlineClassName: `issue-squiggly-${issue.severity}`,
-            hoverMessage: { value: `**${issue.severity.toUpperCase()}**: ${issue.issue}\n\n*Suggestion:* ${issue.suggestion}` }
-          }
-        };
-      }),
-      // Add rhyme end-word decorations
-      ...Array.from(rhymeMap.entries()).flatMap(([lineIndex, info]) => {
-        if (info.group === '-') return [];
-        const lineNum = lineIndex + 1;
+          hoverMessage: { value: '**AI Slop Detected:** This phrase is heavily overused in AI-generated lyrics.' },
+        },
+      });
+    }
+
+    // Issue decorations
+    for (const issue of lyricIssues) {
+      const lineContent = editorRef.current.getModel()?.getLineContent(issue.line) || '';
+      newDecorations.push({
+        range: new monaco.Range(issue.line, 1, issue.line, lineContent.length + 1),
+        options: {
+          isWholeLine: true,
+          className: `issue-bg-${issue.severity}`,
+          inlineClassName: `issue-squiggly-${issue.severity}`,
+          hoverMessage: { value: `**${issue.severity.toUpperCase()}**: ${issue.issue}\n\n*Suggestion:* ${issue.suggestion}` },
+        },
+      });
+    }
+
+    // Rhyme end-word inline coloring
+    for (const [lineIndex, info] of rhymeMap.entries()) {
+      if (info.group === '-') continue;
+      const lineNum = lineIndex + 1;
+      const lineContent = editorRef.current.getModel()?.getLineContent(lineNum) || '';
+      const endWordMatch = lineContent.match(/\b\w+\b[^\w]*$/);
+      if (!endWordMatch) continue;
+      const startCol = endWordMatch.index! + 1;
+      const endCol = startCol + endWordMatch[0].replace(/[^\w]+$/, '').length;
+      newDecorations.push({
+        range: new monaco.Range(lineNum, startCol, lineNum, endCol),
+        options: {
+          isWholeLine: false,
+          inlineClassName: `rhyme-group-${info.group}`,
+          hoverMessage: { value: `**Rhyme Group ${info.group}**\nSection Pattern: ${info.sectionPattern}` },
+        },
+      });
+    }
+
+    // ─── Syllable count + Rhyme letter gutter decorations ─────────────
+    // Use glyphMarginClassName with CSS ::before for syllable counts
+    // and linesDecorationsClassName with CSS ::after for rhyme letters
+    for (const stat of lineStats) {
+      const lineNum = stat.line;
+      if (stat.syllables <= 0) continue;
+
+      // Syllable count — shown in glyph margin via ::before
+      const sylText = stat.target !== undefined
+        ? `'${stat.syllables}/${stat.target}'`
+        : `'${stat.syllables}'`;
+      const sylColor = getSyllableColorHex(stat.syllables, stat.target);
+      const sylClassName = `syl-gutter-${lineNum}`;
+
+      try {
+        sheet.insertRule(`.${sylClassName}::before { content: ${sylText}; color: ${sylColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: ${stat.target !== undefined && stat.syllables === stat.target ? '700' : '400'}; display: flex; align-items: center; justify-content: flex-end; width: 100%; height: 100%; padding-right: 6px; }`, sheet.cssRules.length);
+      } catch { /* ignore insertion errors */ }
+
+      newDecorations.push({
+        range: new monaco.Range(lineNum, 1, lineNum, 1),
+        options: {
+          glyphMarginClassName: sylClassName,
+        },
+      });
+
+      // Rhyme letter — shown after line content via afterContentClassName
+      const rhymeInfo = rhymeMap.get(lineNum - 1); // rhymeMap is 0-indexed
+      if (rhymeInfo && rhymeInfo.group !== '-') {
+        const rhymeColor = RHYME_COLORS[rhymeInfo.group] || '#71717a';
+        const rhymeLabel = rhymeInfo.isFirstOfSection
+          ? `'  ${rhymeInfo.group} ${rhymeInfo.sectionPattern}'`
+          : `'  ${rhymeInfo.group}'`;
+        const rhymeClassName = `rhyme-after-${lineNum}`;
+        try {
+          sheet.insertRule(`.${rhymeClassName}::after { content: ${rhymeLabel}; color: ${rhymeColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: 700; opacity: 0.8; }`, sheet.cssRules.length);
+        } catch { /* ignore */ }
+
         const lineContent = editorRef.current.getModel()?.getLineContent(lineNum) || '';
-        const endWordMatch = lineContent.match(/\b\w+\b[^\w]*$/);
-        if (!endWordMatch) return [];
-        
-        const startCol = endWordMatch.index! + 1;
-        const endCol = startCol + endWordMatch[0].replace(/[^\w]+$/, '').length;
-        
-        return [{
-          range: new monaco.Range(lineNum, startCol, lineNum, endCol),
+        newDecorations.push({
+          range: new monaco.Range(lineNum, lineContent.length + 1, lineNum, lineContent.length + 1),
           options: {
-            isWholeLine: false,
-            inlineClassName: `rhyme-group-${info.group}`,
-            hoverMessage: { value: `**Rhyme Group ${info.group}**\nSection Pattern: ${info.sectionPattern}` }
-          }
-        }];
-      })
-    ];
+            afterContentClassName: rhymeClassName,
+          },
+        });
+      }
+    }
 
     decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, newDecorations);
   };
@@ -133,78 +216,41 @@ export function LyricEditor() {
   const handleEditorChange = (value: string | undefined) => {
     const val = value || '';
     setLyrics(val);
-    
-    // Validate Suno Tags
     setValidation(validateSunoTags(val));
 
-    // Find Cliches
     const clicheMatches = findCliches(val);
     setCliches(clicheMatches);
 
-    // Calculate syllables per line
     const lines = val.split('\n');
     const template = currentTemplateId ? TEMPLATES[currentTemplateId] : null;
-    
-    let structuralLineCount = 0; // To track which lines are lyrics vs structural tags
-    
+    let structuralLineCount = 0;
+
     const stats = lines.map((line, index) => {
       const isStructural = line.trim().startsWith('[');
       const syllables = countLineSyllables(line);
-      
       let target;
       if (!isStructural && line.trim().length > 0 && template) {
         target = template.pocketMap[structuralLineCount];
         structuralLineCount++;
       }
-      
-      return {
-        line: index + 1,
-        syllables,
-        target
-      };
+      return { line: index + 1, syllables, target };
     });
     setLineStats(stats);
 
-    // Recompute bar-aware arrangement mapping
     useArrangementStore.getState().recomputeMapping(val);
   };
 
-  // Re-calculate when template changes
   useEffect(() => {
     handleEditorChange(lyrics);
   }, [currentTemplateId]);
 
-  // Re-calculate decorations when lyricIssues, cliches, or rhymeMap changes
   useEffect(() => {
     updateDecorations();
-  }, [lyricIssues, cliches, rhymeMap]);
-
-  const gutterRef = useRef<HTMLDivElement>(null);
-  const rhymeGutterRef = useRef<HTMLDivElement>(null);
-  const [editorLineHeight, setEditorLineHeight] = useState(21);
-  const [editorTopPadding, setEditorTopPadding] = useState(16);
+  }, [lyricIssues, cliches, rhymeMap, lineStats]);
 
   const handleEditorDidMount = (editor: any) => {
     editorRef.current = editor;
-    handleEditorChange(lyrics); // Initial calculation
-
-    // Get actual line height and top padding from Monaco
-    if (monaco) {
-      const lh = editor.getOption(monaco.editor.EditorOption.lineHeight);
-      setEditorLineHeight(lh);
-    }
-    // Monaco's padding.top is set in options — use it directly
-    setEditorTopPadding(16);
-
-    editor.onDidScrollChange(() => {
-      const scrollTop = editor.getScrollTop();
-      if (gutterRef.current) {
-        gutterRef.current.scrollTop = scrollTop;
-      }
-      if (rhymeGutterRef.current) {
-        rhymeGutterRef.current.scrollTop = scrollTop;
-      }
-    });
+    handleEditorChange(lyrics);
 
     useStore.getState().setEditorScrollToLine((line: number) => {
       editor.revealLineInCenter(line);
@@ -213,35 +259,11 @@ export function LyricEditor() {
     });
   };
 
-  // Clean up the scroll callback when unmounting
   useEffect(() => {
     return () => {
       useStore.getState().setEditorScrollToLine(null);
     };
   }, []);
-
-  const getSyllableColor = (actual: number, target?: number) => {
-    if (target === undefined || actual === 0) return 'text-zinc-500';
-    const diff = Math.abs(actual - target);
-    if (diff === 0) return 'text-emerald-400 font-bold';
-    if (diff === 1) return 'text-amber-400';
-    return 'text-red-400';
-  };
-
-  const getRhymeColor = (group: string) => {
-    if (group === '-') return 'text-zinc-600';
-    const colors = [
-      'text-blue-400',
-      'text-emerald-400',
-      'text-purple-400',
-      'text-amber-400',
-      'text-pink-400',
-      'text-cyan-400',
-      'text-rose-400',
-    ];
-    const charCode = group.charCodeAt(0) - 65; // A = 0
-    return colors[charCode % colors.length];
-  };
 
   const handleExport = () => {
     const arrangementState = useArrangementStore.getState();
@@ -259,7 +281,6 @@ export function LyricEditor() {
   const handleSave = async () => {
     if (!user) return;
     setIsSaving(true);
-    
     const projectData = {
       uid: user.uid,
       title: projectTitle,
@@ -268,7 +289,6 @@ export function LyricEditor() {
       templateId: currentTemplateId,
       updatedAt: Date.now(),
     };
-
     try {
       if (currentProjectId) {
         await setDoc(doc(db, 'projects', currentProjectId), projectData, { merge: true });
@@ -292,7 +312,6 @@ export function LyricEditor() {
     try {
       const { GoogleGenAI } = await import('@google/genai');
       const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
-      
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-pro-preview',
         contents: `You are a lyric formatting assistant for Suno AI.
@@ -308,7 +327,6 @@ RULES:
 Lyrics:
 ${lyrics}`
       });
-
       if (response.text) {
         setLyrics(response.text.trim());
       }
@@ -374,7 +392,7 @@ ${lyrics}`
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button 
+          <button
             onClick={handleFormatForSuno}
             disabled={isFormatting || !lyrics.trim()}
             className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium rounded-md transition-colors disabled:opacity-50"
@@ -388,7 +406,7 @@ ${lyrics}`
             Format
           </button>
           {user && (
-            <button 
+            <button
               onClick={handleSave}
               disabled={isSaving}
               className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium rounded-md transition-colors disabled:opacity-50"
@@ -397,7 +415,7 @@ ${lyrics}`
               {isSaving ? 'Saving...' : 'Save'}
             </button>
           )}
-          <button 
+          <button
             onClick={handleExport}
             className="flex items-center gap-2 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium rounded-md transition-colors"
           >
@@ -429,80 +447,32 @@ ${lyrics}`
 
       <ArrangementStatusBar />
 
-      <div className="flex-1 relative flex overflow-hidden">
-        {/* Custom Gutter for Syllable Counts */}
-        <div
-          ref={gutterRef}
-          className="w-16 bg-zinc-950 border-r border-zinc-800 flex flex-col items-end pr-2 text-xs font-mono select-none"
-          style={{ overflow: 'hidden', paddingTop: editorTopPadding }}
-        >
-          {lineStats.map((stat, i) => (
-            <div key={i} className={`flex items-center justify-end w-full gap-1 ${getSyllableColor(stat.syllables, stat.target)}`} style={{ height: editorLineHeight }}>
-              {stat.syllables > 0 ? (
-                <>
-                  <span>{stat.syllables}</span>
-                  {stat.target !== undefined && (
-                    <span className="text-zinc-600 text-[10px]">/{stat.target}</span>
-                  )}
-                </>
-              ) : ''}
-            </div>
-          ))}
-        </div>
-
-        {/* Monaco Editor */}
-        <div className="flex-1 h-full">
-          <Editor
-            height="100%"
-            defaultLanguage="suno-lyrics"
-            theme="suno-dark"
-            value={lyrics}
-            onChange={handleEditorChange}
-            onMount={handleEditorDidMount}
-            options={{
-              minimap: { enabled: false },
-              wordWrap: 'on',
-              lineNumbers: 'off', // We use our custom gutter
-              glyphMargin: false,
-              folding: false,
-              lineDecorationsWidth: 0,
-              lineNumbersMinChars: 0,
-              fontSize: 14,
-              fontFamily: 'JetBrains Mono, monospace',
-              padding: { top: 16, bottom: 16 },
-              scrollBeyondLastLine: false,
-              renderLineHighlight: 'all',
-              contextmenu: true,
-            }}
-          />
-        </div>
-
-        {/* Rhyme Scheme Gutter (Right) */}
-        <div
-          ref={rhymeGutterRef}
-          className="w-24 bg-zinc-950 border-l border-zinc-800 flex flex-col items-start pl-3 text-xs font-mono select-none"
-          style={{ overflow: 'hidden', paddingTop: editorTopPadding }}
-        >
-          {lineStats.map((stat, i) => {
-            const rhymeInfo = rhymeMap.get(i);
-            return (
-              <div key={i} className="flex items-center w-full gap-2" style={{ height: editorLineHeight }}>
-                {rhymeInfo && (
-                  <>
-                    <span className={`font-bold ${getRhymeColor(rhymeInfo.group)}`}>
-                      {rhymeInfo.group}
-                    </span>
-                    {rhymeInfo.isFirstOfSection && (
-                      <span className={`text-[10px] ${['FREE', 'UNKNOWN'].includes(rhymeInfo.sectionPattern) ? 'text-red-400/80' : 'text-zinc-600'}`}>
-                        {rhymeInfo.sectionPattern}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      {/* Monaco Editor — gutter info rendered via decorations, not separate divs */}
+      <div className="flex-1 relative overflow-hidden">
+        <Editor
+          height="100%"
+          defaultLanguage="suno-lyrics"
+          theme="suno-dark"
+          value={lyrics}
+          onChange={handleEditorChange}
+          onMount={handleEditorDidMount}
+          options={{
+            minimap: { enabled: false },
+            wordWrap: 'on',
+            lineNumbers: 'off',
+            glyphMargin: true,
+            glyphMarginWidth: 64,
+            folding: false,
+            lineDecorationsWidth: 0,
+            lineNumbersMinChars: 0,
+            fontSize: 14,
+            fontFamily: 'JetBrains Mono, monospace',
+            padding: { top: 16, bottom: 16 },
+            scrollBeyondLastLine: false,
+            renderLineHighlight: 'all',
+            contextmenu: true,
+          }}
+        />
       </div>
 
       {/* Validation Panel (Bottom) */}
