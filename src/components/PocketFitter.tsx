@@ -5,6 +5,11 @@ import { countLineSyllables } from '../lib/syllables';
 import { parseStructuralTag } from '../lib/arrangement';
 import { Ruler, Sparkles, Check, X, ArrowRight, AlertTriangle } from 'lucide-react';
 
+import { SectionType } from '../lib/arrangement';
+import { Info } from 'lucide-react';
+
+const READ_ONLY_SECTIONS = new Set<SectionType>(['chorus', 'hook', 'post-chorus']);
+
 interface Mismatch {
   id: string;
   lineIndex: number;
@@ -13,6 +18,8 @@ interface Mismatch {
   target?: number;
   isExtraLine?: boolean;
   sectionName?: string;
+  sectionType?: SectionType;
+  isReadOnly?: boolean; // chorus/hook/post-chorus — don't suggest changes
   suggestion?: string;
   isFixing?: boolean;
 }
@@ -66,18 +73,21 @@ export function PocketFitter() {
           const target = currentSection.syllableTarget;
           const tolerance = currentSection.syllableTolerance;
           const max = maxLinesForSection();
+          const isReadOnly = READ_ONLY_SECTIONS.has(currentSection.type);
 
-          if (max > 0 && linesInSection >= max) {
+          if (max > 0 && linesInSection >= max && !isReadOnly) {
             newMismatches.push({
               id: Math.random().toString(36).substring(2, 11),
               lineIndex: index, text: line, actual,
               isExtraLine: true, sectionName: currentSection.label,
+              sectionType: currentSection.type, isReadOnly,
             });
           } else if (target > 0 && Math.abs(actual - target) > tolerance) {
             newMismatches.push({
               id: Math.random().toString(36).substring(2, 11),
               lineIndex: index, text: line, actual, target,
               sectionName: currentSection.label,
+              sectionType: currentSection.type, isReadOnly,
             });
           }
           linesInSection++;
@@ -258,7 +268,14 @@ Output ONLY the rewritten line, nothing else. Do not include quotes or explanati
                 {mismatch.text}
               </div>
 
-              {mismatch.isExtraLine ? (
+              {mismatch.isReadOnly ? (
+                <div className="mt-2 pt-2 border-t border-blue-500/10">
+                  <p className="text-xs text-blue-400/80 flex items-center gap-1.5">
+                    <Info className="w-3 h-3 flex-shrink-0" />
+                    {mismatch.sectionName} pocket: {mismatch.actual} syllables/line. Consider adjusting your template to match rather than changing the lyrics.
+                  </p>
+                </div>
+              ) : mismatch.isExtraLine ? (
                 <div className="mt-2 pt-2 border-t border-amber-500/10">
                   <p className="text-xs text-amber-400/80 mb-2">This line exceeds the expected length of the {mismatch.sectionName}. This often causes Suno to spill over into the next section.</p>
                   <button

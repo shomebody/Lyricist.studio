@@ -258,14 +258,33 @@ export const useArrangementStore = create<ArrangementState>((set, get) => ({
     for (const line of mapped) {
       if (line.isStructuralTag || line.isBlankLine || !line.text.trim()) continue;
 
-      // Use sectionId if template is active, otherwise group by sectionLabel
+      const trimmed = line.text.trim();
+      // Skip fully-parenthetical lines (call-and-response cues)
+      if (/^\([^)]+\)$/.test(trimmed)) continue;
+
+      // Strip echo tails before rhyme analysis so "meditation (tation)"
+      // gets its rhyme letter from "meditation", not "tation"
+      const echoMatch = trimmed.match(/^(.+?)\s*\([^)]+\)\s*$/);
+      let cleanText = trimmed;
+      if (echoMatch) {
+        const mainText = echoMatch[1].trim();
+        const parenText = echoMatch[2] || '';
+        // Only strip if the paren content echoes the main text
+        const mainWords = mainText.toLowerCase().split(/\s+/);
+        const lastWord = mainWords[mainWords.length - 1] || '';
+        if (mainText.toLowerCase().endsWith(parenText.toLowerCase()) ||
+            (lastWord.length > 3 && lastWord.endsWith(parenText.toLowerCase()))) {
+          cleanText = mainText;
+        }
+      }
+
       const key = line.sectionId || line.sectionLabel || '__untagged__';
       const label = line.sectionLabel || 'Untagged';
 
       if (!sectionGroups.has(key)) {
         sectionGroups.set(key, { id: key, label, lines: [] });
       }
-      sectionGroups.get(key)!.lines.push({ text: line.text.trim(), index: line.lineIndex });
+      sectionGroups.get(key)!.lines.push({ text: cleanText, index: line.lineIndex });
     }
 
     for (const [, group] of sectionGroups) {

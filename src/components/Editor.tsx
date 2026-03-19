@@ -5,7 +5,7 @@ import { countLineSyllables } from '../lib/syllables';
 import { validateSunoTags } from '../lib/suno';
 import { findCliches, ClicheMatch } from '../lib/cliches';
 import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
-import { exportForSuno } from '../lib/arrangement';
+import { exportForSuno, SECTION_BG_COLORS, SectionType } from '../lib/arrangement';
 import { ArrangementStatusBar } from './ArrangementStatusBar';
 import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
@@ -34,7 +34,7 @@ function clearGutterStyles() {
 
 export function LyricEditor() {
   const { lyrics, setLyrics, currentTemplateId, stylePrompt, setStylePrompt, user, currentProjectId, setCurrentProjectId, lyricIssues } = useStore();
-  const { currentArrangementId, showBarAnnotations, rhymeAnalyses } = useArrangementStore();
+  const { currentArrangementId, showBarAnnotations, rhymeAnalyses, mappedLines } = useArrangementStore();
   const monaco = useMonaco();
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<string[]>([]);
@@ -144,6 +144,26 @@ export function LyricEditor() {
       });
     }
 
+    // Section background color decorations (Fix C)
+    for (const ml of mappedLines) {
+      if (!ml.sectionType || ml.isBlankLine) continue;
+      const bgColor = SECTION_BG_COLORS[ml.sectionType as SectionType];
+      if (!bgColor) continue;
+
+      const lineNum = ml.lineIndex + 1;
+      // Structural tag lines get a stronger tint
+      const opacity = ml.isStructuralTag ? 3 : 1;
+      const sectionBgClass = `section-bg-${ml.sectionType}-${opacity}`;
+      try {
+        sheet.insertRule(`.${sectionBgClass} { background-color: ${bgColor.replace('0.08', ml.isStructuralTag ? '0.15' : '0.08')}; }`, sheet.cssRules.length);
+      } catch { /* ignore duplicates */ }
+
+      newDecorations.push({
+        range: new monaco.Range(lineNum, 1, lineNum, 1),
+        options: { isWholeLine: true, className: sectionBgClass },
+      });
+    }
+
     // Rhyme end-word inline coloring
     for (const [lineIndex, info] of rhymeMap.entries()) {
       if (info.group === '-') continue;
@@ -246,7 +266,7 @@ export function LyricEditor() {
 
   useEffect(() => {
     updateDecorations();
-  }, [lyricIssues, cliches, rhymeMap, lineStats]);
+  }, [lyricIssues, cliches, rhymeMap, lineStats, mappedLines]);
 
   const handleEditorDidMount = (editor: any) => {
     editorRef.current = editor;
