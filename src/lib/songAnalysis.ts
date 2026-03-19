@@ -86,6 +86,9 @@ function parseSections(lyrics: string): ParsedSection[] {
     }
 
     if (current && trimmed.length > 0) {
+      // Fix 2: Skip fully-parenthetical lines — they're call-and-response cues,
+      // not independent lyric lines (e.g. "(home improvement)")
+      if (/^\([^)]+\)$/.test(trimmed)) continue;
       current.lines.push({ text: trimmed, lineNum: i + 1 });
     }
   }
@@ -337,23 +340,9 @@ function checkRhymeSchemeConsistency(sections: ParsedSection[]): AnalysisIssue[]
 
 // ─── 3. Echo Tail Recognition ───────────────────────────────────────
 
-function recognizeEchoTails(sections: ParsedSection[]): AnalysisIssue[] {
-  const issues: AnalysisIssue[] = [];
-  for (const section of sections) {
-    for (const line of section.lines) {
-      const { isEcho, echoText } = isEchoTail(line.text);
-      if (isEcho) {
-        issues.push({
-          id: nextId(), category: 'echo-tail', severity: 'info',
-          title: `Echo tail detected in ${section.label}`,
-          description: `"(${echoText})" is a Suno echo/performance cue.`,
-          sectionLabel: section.label, lines: [line.lineNum],
-        });
-      }
-    }
-  }
-  return issues;
-}
+// Echo tails are recognized internally by cleanLyricLine() and isEchoTail().
+// We no longer emit info-level issues for them — they're informational noise.
+// The app already handles them correctly in analysis.
 
 // ─── 4. Redundancy ──────────────────────────────────────────────────
 
@@ -361,23 +350,39 @@ function checkRedundancy(sections: ParsedSection[]): AnalysisIssue[] {
   const issues: AnalysisIssue[] = [];
   for (const section of sections) {
     const cleanLines = section.lines.map(l => ({ ...l, clean: cleanLyricLine(l.text) }));
+    const redundantPairs: { a: typeof cleanLines[0]; b: typeof cleanLines[0] }[] = [];
+
     for (let i = 0; i < cleanLines.length; i++) {
       for (let j = i + 1; j < cleanLines.length; j++) {
         const a = cleanLines[i], b = cleanLines[j];
-        const endWordA = getSignificantWords(a.clean).slice(-1)[0] || '';
-        const endWordB = getSignificantWords(b.clean).slice(-1)[0] || '';
-        const sameEndWord = endWordA && endWordB && (endWordA === endWordB || simpleRhymeCheck(endWordA, endWordB));
         const overlap = wordOverlap(a.clean, b.clean);
-        if (overlap >= 0.5 || (overlap >= 0.3 && sameEndWord)) {
-          issues.push({
-            id: nextId(), category: 'redundancy', severity: 'suggestion',
-            title: `Similar lines in ${section.label}`,
-            description: `These lines express a similar idea:\n  Line ${a.lineNum}: "${a.text}"\n  Line ${b.lineNum}: "${b.text}"\nConsider differentiating them or cutting one.`,
-            sectionLabel: section.label, lines: [a.lineNum, b.lineNum],
-            context: { sectionLyrics: section.lines.map(l => l.text).join('\n'), sectionType: section.type, sectionLabel: section.label },
-          });
+        // Fix 5c: tightened threshold from 0.5 to 0.6
+        if (overlap >= 0.6) {
+          redundantPairs.push({ a, b });
         }
       }
+    }
+
+    // Fix 5d: consolidate multiple redundancy flags per section into one card
+    if (redundantPairs.length > 1) {
+      const allLines = new Set<number>();
+      redundantPairs.forEach(({ a, b }) => { allLines.add(a.lineNum); allLines.add(b.lineNum); });
+      issues.push({
+        id: nextId(), category: 'redundancy', severity: 'suggestion',
+        title: `Repetitive phrasing in ${section.label}`,
+        description: `${redundantPairs.length} line pairs express similar ideas. Consider differentiating them to keep the section tight.`,
+        sectionLabel: section.label, lines: [...allLines],
+        context: { sectionLyrics: section.lines.map(l => l.text).join('\n'), sectionType: section.type, sectionLabel: section.label },
+      });
+    } else if (redundantPairs.length === 1) {
+      const { a, b } = redundantPairs[0];
+      issues.push({
+        id: nextId(), category: 'redundancy', severity: 'suggestion',
+        title: `Similar lines in ${section.label}`,
+        description: `These lines express a similar idea:\n  Line ${a.lineNum}: "${a.text}"\n  Line ${b.lineNum}: "${b.text}"\nConsider differentiating them or cutting one.`,
+        sectionLabel: section.label, lines: [a.lineNum, b.lineNum],
+        context: { sectionLyrics: section.lines.map(l => l.text).join('\n'), sectionType: section.type, sectionLabel: section.label },
+      });
     }
   }
   return issues;
@@ -510,6 +515,10 @@ function checkSectionIdentity(sections: ParsedSection[]): AnalysisIssue[] {
 
 function checkVersionConflicts(sections: ParsedSection[]): AnalysisIssue[] {
   const issues: AnalysisIssue[] = [];
+
+  // Types that are SUPPOSED to repeat identically
+  const repeatableTypes = new Set<SectionType>(['chorus', 'hook', 'pre-chorus', 'post-chorus']);
+
   const seenLabels = new Map<string, ParsedSection[]>();
   for (const sec of sections) {
     const normalized = sec.label.toLowerCase().trim();
@@ -520,11 +529,18 @@ function checkVersionConflicts(sections: ParsedSection[]): AnalysisIssue[] {
 
   for (const [, group] of seenLabels) {
     if (group.length < 2) continue;
-    if (group[0].type === 'chorus' || group[0].type === 'hook') continue;
+
     for (let i = 1; i < group.length; i++) {
       const a = group[0], b = group[i];
       const textA = a.lines.map(l => cleanLyricLine(l.text)).join('\n');
       const textB = b.lines.map(l => cleanLyricLine(l.text)).join('\n');
+
+      // Fix 1: 100% identical content = intentional repetition, never a conflict
+      if (textA.toLowerCase() === textB.toLowerCase()) continue;
+
+      // For repeatable section types, only flag if content DIFFERS (looks like alternate drafts)
+      if (repeatableTypes.has(a.type)) continue;
+
       const overlap = wordOverlap(textA, textB);
       if (overlap > 0.5) {
         const linesA = textA.split('\n'), linesB = textB.split('\n');
@@ -536,7 +552,7 @@ function checkVersionConflicts(sections: ParsedSection[]): AnalysisIssue[] {
         issues.push({
           id: nextId(), category: 'version-conflict', severity: 'warning',
           title: `Possible alternate versions: "${a.label}"`,
-          description: `Two [${a.label}] sections have ${Math.round(overlap * 100)}% word overlap. Choose one or merge the best lines.`,
+          description: `Two [${a.label}] sections have ${Math.round(overlap * 100)}% word overlap but differ on ${diffs.length} lines. Choose one or merge the best lines.`,
           sectionLabel: a.label,
           lines: [...a.lines.map(l => l.lineNum), ...b.lines.map(l => l.lineNum)],
           context: { versionsA: textA, versionsB: textB, sectionLabel: a.label, sectionType: a.type, diffLines: diffs },
@@ -545,15 +561,20 @@ function checkVersionConflicts(sections: ParsedSection[]): AnalysisIssue[] {
     }
   }
 
+  // Cross-label check for same-type sections (skip repeatable types)
   for (let i = 0; i < sections.length; i++) {
     for (let j = i + 1; j < sections.length; j++) {
       const a = sections[i], b = sections[j];
       if (a.label.toLowerCase() === b.label.toLowerCase()) continue;
       if (a.type !== b.type) continue;
+      if (repeatableTypes.has(a.type)) continue;
+
       const textA = a.lines.map(l => cleanLyricLine(l.text)).join(' ');
       const textB = b.lines.map(l => cleanLyricLine(l.text)).join(' ');
+      if (textA.toLowerCase() === textB.toLowerCase()) continue; // identical = intentional
+
       const overlap = wordOverlap(textA, textB);
-      if (overlap > 0.5 && a.type !== 'chorus' && a.type !== 'hook') {
+      if (overlap > 0.5) {
         issues.push({
           id: nextId(), category: 'version-conflict', severity: 'suggestion',
           title: `"${a.label}" and "${b.label}" are very similar`,
@@ -813,7 +834,7 @@ function checkSyllableMirroring(sections: ParsedSection[]): AnalysisIssue[] {
     // MM-001: Adjacent lines within a section should match ±1
     for (let i = 0; i < syllables.length - 1; i++) {
       const a = syllables[i], b = syllables[i + 1];
-      if (a > 0 && b > 0 && Math.abs(a - b) > 2) {
+      if (a > 0 && b > 0 && Math.abs(a - b) > 3) {
         issues.push({
           id: nextId(), category: 'syllable-mirroring', severity: 'suggestion',
           title: `Syllable mismatch in ${section.label}`,
@@ -892,6 +913,50 @@ function checkCraftRules(sections: ParsedSection[]): AnalysisIssue[] {
   return issues;
 }
 
+// ─── 12. Evolving Repetition Suggestions (Fix 6) ────────────────────
+
+function checkEvolvingRepetition(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
+  const repeatableTypes = new Set<SectionType>(['chorus', 'hook', 'pre-chorus', 'post-chorus']);
+  const byType = new Map<SectionType, ParsedSection[]>();
+
+  for (const sec of sections) {
+    if (!repeatableTypes.has(sec.type)) continue;
+    const group = byType.get(sec.type) || [];
+    group.push(sec);
+    byType.set(sec.type, group);
+  }
+
+  for (const [type, group] of byType) {
+    if (group.length < 2) continue;
+    const reference = group[0];
+    const refText = reference.lines.map(l => cleanLyricLine(l.text).toLowerCase()).join('\n');
+    const allIdentical = group.slice(1).every(sec =>
+      sec.lines.map(l => cleanLyricLine(l.text).toLowerCase()).join('\n') === refText
+    );
+
+    if (!allIdentical) continue;
+
+    if (type === 'pre-chorus') {
+      issues.push({
+        id: nextId(), category: 'craft', severity: 'suggestion',
+        title: 'Pre-choruses are identical — consider evolving',
+        description: `Your pre-choruses are identical. Consider subtle word changes on the second pass to reflect how the story has progressed. Artists like The Weeknd often evolve pre-choruses with small word swaps that deepen meaning each time they return.`,
+        sectionLabel: reference.label,
+      });
+    } else if (type === 'chorus' || type === 'hook') {
+      issues.push({
+        id: nextId(), category: 'craft', severity: 'suggestion',
+        title: 'Choruses are identical — strong for hooks',
+        description: `Your choruses are identical — which is strong for hook consistency. If you want to add emotional progression, consider a small word change in the final chorus only (e.g., changing "I want" to "I need" or present tense to past tense).`,
+        sectionLabel: reference.label,
+      });
+    }
+  }
+
+  return issues;
+}
+
 // ─── Main Analysis Entry Point ──────────────────────────────────────
 
 export interface FullAnalysisResult {
@@ -911,7 +976,6 @@ export function analyzeSong(lyrics: string): FullAnalysisResult {
   allIssues.push(...checkChorusConsistency(sections));
   allIssues.push(...checkRhymePatterns(sections));
   allIssues.push(...checkRhymeSchemeConsistency(sections));
-  allIssues.push(...recognizeEchoTails(sections));
   allIssues.push(...checkRedundancy(sections));
   allIssues.push(...checkSectionIdentity(sections));
   allIssues.push(...checkVersionConflicts(sections));
@@ -919,6 +983,7 @@ export function analyzeSong(lyrics: string): FullAnalysisResult {
   allIssues.push(...checkAISlop(sections, lyrics));
   allIssues.push(...checkSyllableMirroring(sections));
   allIssues.push(...checkCraftRules(sections));
+  allIssues.push(...checkEvolvingRepetition(sections));
 
   const { score, issues: completenessIssues } = checkCompleteness(sections);
   allIssues.push(...completenessIssues);

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useStore, TEMPLATES } from '../store/useStore';
+import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
 import { countLineSyllables } from '../lib/syllables';
+import { parseStructuralTag } from '../lib/arrangement';
 import { Ruler, Sparkles, Check, X, ArrowRight, AlertTriangle } from 'lucide-react';
 
 interface Mismatch {
@@ -17,12 +19,16 @@ interface Mismatch {
 
 export function PocketFitter() {
   const { lyrics, setLyrics, currentTemplateId } = useStore();
+  const arrangement = useArrangementStore(selectCurrentArrangement);
+  const currentArrangementId = useArrangementStore(s => s.currentArrangementId);
   const [mismatches, setMismatches] = useState<Mismatch[]>([]);
 
-  const template = currentTemplateId ? TEMPLATES[currentTemplateId] : null;
+  const oldTemplate = currentTemplateId ? TEMPLATES[currentTemplateId] : null;
+  const hasTemplate = !!(oldTemplate || arrangement);
+  const templateName = arrangement?.name || oldTemplate?.name || '';
 
   useEffect(() => {
-    if (!lyrics || !template) {
+    if (!lyrics || !hasTemplate) {
       setMismatches([]);
       return;
     }
@@ -30,80 +36,112 @@ export function PocketFitter() {
     const lines = lyrics.split('\n');
     const newMismatches: Mismatch[] = [];
 
-    if (template.sections) {
-      // Section-based analysis
-      let currentSectionName: string | null = null;
-      let currentSectionTemplate: { name: string; lines: number[] } | null = null;
-      let lineCountInSection = 0;
+    if (arrangement) {
+      // Bar-aware template: use section definitions for syllable targets
+      let currentSection: typeof arrangement.sections[0] | null = null;
+      let sectionPointer = 0;
+      let linesInSection = 0;
+      const maxLinesForSection = () =>
+        currentSection ? Math.ceil(currentSection.bars * currentSection.linesPerBar) : 0;
 
       lines.forEach((line, index) => {
         const trimmed = line.trim();
-        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-          // New section
-          currentSectionName = trimmed.slice(1, -1).toLowerCase();
-          // Find matching section in template (e.g. "Verse 1" matches "Verse")
-          currentSectionTemplate = template.sections!.find(s => 
-            currentSectionName!.includes(s.name.toLowerCase())
-          ) || null;
-          lineCountInSection = 0;
-        } else if (trimmed.length > 0) {
-          if (currentSectionTemplate) {
-            const target = currentSectionTemplate.lines[lineCountInSection];
-            const actual = countLineSyllables(line);
-
-            if (target === undefined) {
-              // Extra line!
-              newMismatches.push({
-                id: Math.random().toString(36).substr(2, 9),
-                lineIndex: index,
-                text: line,
-                actual,
-                isExtraLine: true,
-                sectionName: currentSectionTemplate.name
-              });
-            } else if (actual !== target) {
-              newMismatches.push({
-                id: Math.random().toString(36).substr(2, 9),
-                lineIndex: index,
-                text: line,
-                actual,
-                target,
-                sectionName: currentSectionTemplate.name
-              });
+        const tag = parseStructuralTag(trimmed);
+        if (tag) {
+          // Find matching section in arrangement
+          for (let s = sectionPointer; s < arrangement.sections.length; s++) {
+            if (arrangement.sections[s].type === tag.type) {
+              currentSection = arrangement.sections[s];
+              sectionPointer = s + 1;
+              linesInSection = 0;
+              break;
             }
           }
-          lineCountInSection++;
+          return;
         }
-      });
-    } else {
-      // Legacy flat map analysis
-      let structuralLineCount = 0;
-      lines.forEach((line, index) => {
-        const isStructural = line.trim().startsWith('[');
-        if (!isStructural && line.trim().length > 0) {
-          const target = template.pocketMap[structuralLineCount];
+        if (!trimmed || /^\([^)]+\)$/.test(trimmed)) return; // skip blanks and call-and-response
+
+        if (currentSection) {
           const actual = countLineSyllables(line);
-          
-          if (target !== undefined && actual !== target) {
+          const target = currentSection.syllableTarget;
+          const tolerance = currentSection.syllableTolerance;
+          const max = maxLinesForSection();
+
+          if (max > 0 && linesInSection >= max) {
             newMismatches.push({
-              id: Math.random().toString(36).substr(2, 9),
-              lineIndex: index,
-              text: line,
-              actual,
-              target
+              id: Math.random().toString(36).substring(2, 11),
+              lineIndex: index, text: line, actual,
+              isExtraLine: true, sectionName: currentSection.label,
+            });
+          } else if (target > 0 && Math.abs(actual - target) > tolerance) {
+            newMismatches.push({
+              id: Math.random().toString(36).substring(2, 11),
+              lineIndex: index, text: line, actual, target,
+              sectionName: currentSection.label,
             });
           }
-          structuralLineCount++;
+          linesInSection++;
         }
       });
+    } else if (oldTemplate) {
+      if (oldTemplate.sections) {
+        let currentSectionName: string | null = null;
+        let currentSectionTemplate: { name: string; lines: number[] } | null = null;
+        let lineCountInSection = 0;
+
+        lines.forEach((line, index) => {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            currentSectionName = trimmed.slice(1, -1).toLowerCase();
+            currentSectionTemplate = oldTemplate.sections!.find(s =>
+              currentSectionName!.includes(s.name.toLowerCase())
+            ) || null;
+            lineCountInSection = 0;
+          } else if (trimmed.length > 0) {
+            if (currentSectionTemplate) {
+              const target = currentSectionTemplate.lines[lineCountInSection];
+              const actual = countLineSyllables(line);
+              if (target === undefined) {
+                newMismatches.push({
+                  id: Math.random().toString(36).substring(2, 11),
+                  lineIndex: index, text: line, actual,
+                  isExtraLine: true, sectionName: currentSectionTemplate.name,
+                });
+              } else if (actual !== target) {
+                newMismatches.push({
+                  id: Math.random().toString(36).substring(2, 11),
+                  lineIndex: index, text: line, actual, target,
+                  sectionName: currentSectionTemplate.name,
+                });
+              }
+            }
+            lineCountInSection++;
+          }
+        });
+      } else {
+        let structuralLineCount = 0;
+        lines.forEach((line, index) => {
+          const isStructural = line.trim().startsWith('[');
+          if (!isStructural && line.trim().length > 0) {
+            const target = oldTemplate.pocketMap[structuralLineCount];
+            const actual = countLineSyllables(line);
+            if (target !== undefined && actual !== target) {
+              newMismatches.push({
+                id: Math.random().toString(36).substring(2, 11),
+                lineIndex: index, text: line, actual, target,
+              });
+            }
+            structuralLineCount++;
+          }
+        });
+      }
     }
 
-    // Preserve existing suggestions if the line text hasn't changed
     setMismatches(prev => newMismatches.map(newM => {
       const existing = prev.find(p => p.lineIndex === newM.lineIndex && p.text === newM.text);
       return existing ? existing : newM;
     }));
-  }, [lyrics, currentTemplateId]);
+  }, [lyrics, currentTemplateId, currentArrangementId, arrangement]);
 
   const fixLine = async (mismatch: Mismatch) => {
     if (mismatch.isExtraLine) return; // Can't fix an extra line with AI rewriting
@@ -112,7 +150,7 @@ export function PocketFitter() {
     
     try {
       const { GoogleGenAI } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
       
       const lines = lyrics.split('\n');
       const startIdx = Math.max(0, mismatch.lineIndex - 2);
@@ -164,7 +202,7 @@ Output ONLY the rewritten line, nothing else. Do not include quotes or explanati
     }
   };
 
-  if (!template) {
+  if (!hasTemplate) {
     return (
       <div className="flex flex-col h-full bg-zinc-950 p-4">
         <div className="text-center text-zinc-500 py-8 flex flex-col items-center">
@@ -184,7 +222,7 @@ Output ONLY the rewritten line, nothing else. Do not include quotes or explanati
           Pocket Fitter
         </h2>
         <p className="text-xs text-zinc-500 mt-1">
-          Adapting to: <span className="text-zinc-300">{template.name}</span>
+          Adapting to: <span className="text-zinc-300">{templateName}</span>
         </p>
       </div>
 
