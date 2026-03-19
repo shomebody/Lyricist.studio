@@ -181,17 +181,28 @@ export function LyricEditor() {
 
   const gutterRef = useRef<HTMLDivElement>(null);
   const rhymeGutterRef = useRef<HTMLDivElement>(null);
+  const [editorLineHeight, setEditorLineHeight] = useState(21);
+  const [editorTopPadding, setEditorTopPadding] = useState(16);
 
   const handleEditorDidMount = (editor: any) => {
     editorRef.current = editor;
     handleEditorChange(lyrics); // Initial calculation
 
-    editor.onDidScrollChange((e: any) => {
+    // Get actual line height and top padding from Monaco
+    if (monaco) {
+      const lh = editor.getOption(monaco.editor.EditorOption.lineHeight);
+      setEditorLineHeight(lh);
+    }
+    // Monaco's padding.top is set in options — use it directly
+    setEditorTopPadding(16);
+
+    editor.onDidScrollChange(() => {
+      const scrollTop = editor.getScrollTop();
       if (gutterRef.current) {
-        gutterRef.current.scrollTop = e.scrollTop;
+        gutterRef.current.scrollTop = scrollTop;
       }
       if (rhymeGutterRef.current) {
-        rhymeGutterRef.current.scrollTop = e.scrollTop;
+        rhymeGutterRef.current.scrollTop = scrollTop;
       }
     });
 
@@ -420,12 +431,13 @@ ${lyrics}`
 
       <div className="flex-1 relative flex overflow-hidden">
         {/* Custom Gutter for Syllable Counts */}
-        <div 
+        <div
           ref={gutterRef}
-          className="w-16 bg-zinc-950 border-r border-zinc-800 flex flex-col items-end py-4 pr-2 text-xs font-mono overflow-hidden select-none"
+          className="w-16 bg-zinc-950 border-r border-zinc-800 flex flex-col items-end pr-2 text-xs font-mono select-none"
+          style={{ overflow: 'hidden', paddingTop: editorTopPadding }}
         >
           {lineStats.map((stat, i) => (
-            <div key={i} className={`h-[21px] flex items-center justify-end w-full gap-1 ${getSyllableColor(stat.syllables, stat.target)}`}>
+            <div key={i} className={`flex items-center justify-end w-full gap-1 ${getSyllableColor(stat.syllables, stat.target)}`} style={{ height: editorLineHeight }}>
               {stat.syllables > 0 ? (
                 <>
                   <span>{stat.syllables}</span>
@@ -466,14 +478,15 @@ ${lyrics}`
         </div>
 
         {/* Rhyme Scheme Gutter (Right) */}
-        <div 
+        <div
           ref={rhymeGutterRef}
-          className="w-24 bg-zinc-950 border-l border-zinc-800 flex flex-col items-start pl-3 py-4 text-xs font-mono overflow-hidden select-none"
+          className="w-24 bg-zinc-950 border-l border-zinc-800 flex flex-col items-start pl-3 text-xs font-mono select-none"
+          style={{ overflow: 'hidden', paddingTop: editorTopPadding }}
         >
           {lineStats.map((stat, i) => {
             const rhymeInfo = rhymeMap.get(i);
             return (
-              <div key={i} className="h-[21px] flex items-center w-full gap-2">
+              <div key={i} className="flex items-center w-full gap-2" style={{ height: editorLineHeight }}>
                 {rhymeInfo && (
                   <>
                     <span className={`font-bold ${getRhymeColor(rhymeInfo.group)}`}>
