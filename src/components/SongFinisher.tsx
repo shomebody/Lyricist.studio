@@ -1,205 +1,491 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * SongFinisher.tsx — Deep song analysis panel with inline diffs,
+ * collapsible cards, and rich AI fix context.
+ */
+
+import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store/useStore';
-import { 
-  analyzeSongStructure, 
-  analyzeRhymeChains, 
-  analyzeSectionIdentity, 
-  detectVersionConflicts,
-  generateCompletionSuggestions,
-  Suggestion
+import {
+  analyzeSong,
+  FullAnalysisResult,
+  AnalysisIssue,
+  IssueSeverity,
+  CompletenessScore,
 } from '../lib/songAnalysis';
-import { 
-  CheckCircle2, 
-  AlertCircle, 
-  Info, 
-  Wrench, 
-  Sparkles, 
-  GitMerge, 
+import {
+  AlertTriangle,
+  Info,
+  CheckCircle2,
+  Lightbulb,
+  ChevronDown,
+  ChevronRight,
   RefreshCw,
-  Activity,
-  Music,
-  AlignLeft,
-  Layers
+  Send,
+  Wrench,
+  BarChart3,
 } from 'lucide-react';
 
-export function SongFinisher({ onAction }: { onAction?: (prompt: string) => void }) {
-  const { lyrics } = useStore();
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [health, setHealth] = useState<{
-    completeness: number;
-    chorusConsistency: string;
-    rhymeHealth: string;
-    sectionBalance: string;
-  } | null>(null);
+// ─── Severity Styling ───────────────────────────────────────────────
 
-  const analyzeSong = () => {
-    const structure = analyzeSongStructure(lyrics);
-    const rhymes = analyzeRhymeChains(lyrics);
-    const identity = analyzeSectionIdentity(lyrics);
-    const conflicts = detectVersionConflicts(lyrics);
-    const sugs = generateCompletionSuggestions(lyrics);
+const SEVERITY_CONFIG: Record<IssueSeverity, {
+  icon: React.ComponentType<{ className?: string }>;
+  color: string;
+  bg: string;
+  border: string;
+  label: string;
+}> = {
+  error: {
+    icon: AlertTriangle,
+    color: 'text-red-400',
+    bg: 'bg-red-500/5',
+    border: 'border-red-500/20',
+    label: 'Error',
+  },
+  warning: {
+    icon: AlertTriangle,
+    color: 'text-amber-400',
+    bg: 'bg-amber-500/5',
+    border: 'border-amber-500/20',
+    label: 'Warning',
+  },
+  suggestion: {
+    icon: Lightbulb,
+    color: 'text-blue-400',
+    bg: 'bg-blue-500/5',
+    border: 'border-blue-500/20',
+    label: 'Suggestion',
+  },
+  info: {
+    icon: CheckCircle2,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-500/5',
+    border: 'border-emerald-500/20',
+    label: 'Info',
+  },
+};
 
-    let intactChains = 0;
-    let orphans = 0;
-    rhymes.forEach(r => {
-      const groups = new Set(r.groups.filter(g => g.group !== '-').map(g => g.group));
-      intactChains += groups.size;
-      orphans += r.orphans.length;
-    });
+// ─── Inline Diff Component ──────────────────────────────────────────
 
-    let flaggedSections = 0;
-    identity.forEach(id => {
-      if (id.issues.length > 0) flaggedSections++;
-    });
+function InlineDiff({
+  issue,
+  onPickVersion,
+  onSendToAI,
+}: {
+  issue: AnalysisIssue;
+  onPickVersion: (version: 'a' | 'b') => void;
+  onSendToAI: (prompt: string) => void;
+}) {
+  const ctx = issue.context;
+  if (!ctx?.versionsA || !ctx?.versionsB) return null;
 
-    setHealth({
-      completeness: structure.completeness,
-      chorusConsistency: structure.chorusConsistency 
-        ? (structure.chorusConsistency.isIdentical ? 'Identical' : `${structure.chorusConsistency.differingLines} lines differ`)
-        : 'N/A',
-      rhymeHealth: `${intactChains} chains intact, ${orphans} orphans`,
-      sectionBalance: flaggedSections === 0 ? 'All sections doing their job' : `${flaggedSections} sections flagged`
-    });
-
-    setSuggestions(sugs);
-  };
-
-  useEffect(() => {
-    // Auto-analyze on mount or when lyrics change significantly?
-    // The prompt says "When the user clicks 'Analyze Song', run all the analysis functions"
-    // So we'll wait for the button click.
-  }, []);
-
-  const getIconForType = (type: string) => {
-    switch (type) {
-      case 'structure': return <Layers className="w-5 h-5" />;
-      case 'rhyme': return <Music className="w-5 h-5" />;
-      case 'identity': return <AlignLeft className="w-5 h-5" />;
-      case 'consistency': return <RefreshCw className="w-5 h-5" />;
-      case 'conflict': return <GitMerge className="w-5 h-5" />;
-      default: return <Activity className="w-5 h-5" />;
-    }
-  };
-
-  const getColorForSeverity = (severity: string) => {
-    switch (severity) {
-      case 'error': return 'text-red-400 bg-red-400/10 border-red-400/20';
-      case 'warning': return 'text-amber-400 bg-amber-400/10 border-amber-400/20';
-      case 'suggestion': return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
-      default: return 'text-zinc-400 bg-zinc-800 border-zinc-700';
-    }
-  };
-
-  const handleAction = (action: any, suggestion: Suggestion) => {
-    if (!onAction) return;
-    
-    if (action.type === 'generate_section') {
-      onAction(`Can you help me write a ${action.data.sectionType} for this song? It should fit the existing theme and rhyme scheme.`);
-    } else if (action.type === 'fix_rhyme') {
-      onAction(`I need a rhyme for "${action.data.word}" on line ${action.data.lineIndex + 1}. What are some good options that fit the context?`);
-    } else if (action.type === 'sync_chorus') {
-      onAction(`My choruses are slightly different. Can you show me the differences and help me pick the best version to use for all of them?`);
-    } else if (action.type === 'resolve_conflict') {
-      onAction(`I have multiple versions of ${action.data.tag}. Can you help me compare them and merge the best parts?`);
-    }
-  };
+  const linesA = ctx.versionsA.split('\n');
+  const linesB = ctx.versionsB.split('\n');
+  const maxLen = Math.max(linesA.length, linesB.length);
+  const diffSet = new Set((ctx.diffLines || []).map(d => d.lineNum));
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 text-zinc-100 overflow-hidden">
-      <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
-        <div>
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Wrench className="w-5 h-5 text-indigo-400" />
-            Song Finisher
-          </h2>
-          <p className="text-xs text-zinc-400 mt-1">Analyze your song and get actionable feedback to finish it.</p>
+    <div className="mt-2 space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        {/* Version A */}
+        <div className="rounded-md border border-zinc-800 overflow-hidden">
+          <div className="px-2 py-1 bg-zinc-800/50 text-[10px] font-semibold text-zinc-400 uppercase">
+            Version A
+          </div>
+          <div className="p-2 space-y-0.5 font-mono text-[11px]">
+            {linesA.map((line, i) => (
+              <div
+                key={i}
+                className={`px-1 rounded ${
+                  diffSet.has(i + 1) ? 'bg-amber-500/10 text-amber-300' : 'text-zinc-400'
+                }`}
+              >
+                {line || '\u00A0'}
+              </div>
+            ))}
+            {/* Pad if shorter */}
+            {Array.from({ length: maxLen - linesA.length }).map((_, i) => (
+              <div key={`pad-a-${i}`} className="px-1 text-zinc-700 italic text-[10px]">(missing)</div>
+            ))}
+          </div>
+        </div>
+
+        {/* Version B */}
+        <div className="rounded-md border border-zinc-800 overflow-hidden">
+          <div className="px-2 py-1 bg-zinc-800/50 text-[10px] font-semibold text-zinc-400 uppercase">
+            Version B
+          </div>
+          <div className="p-2 space-y-0.5 font-mono text-[11px]">
+            {linesB.map((line, i) => (
+              <div
+                key={i}
+                className={`px-1 rounded ${
+                  diffSet.has(i + 1) ? 'bg-amber-500/10 text-amber-300' : 'text-zinc-400'
+                }`}
+              >
+                {line || '\u00A0'}
+              </div>
+            ))}
+            {Array.from({ length: maxLen - linesB.length }).map((_, i) => (
+              <div key={`pad-b-${i}`} className="px-1 text-zinc-700 italic text-[10px]">(missing)</div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onPickVersion('a')}
+          className="px-2 py-1 text-[10px] font-medium text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+        >
+          Use Version A
+        </button>
+        <button
+          onClick={() => onPickVersion('b')}
+          className="px-2 py-1 text-[10px] font-medium text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+        >
+          Use Version B
+        </button>
+        <button
+          onClick={() => {
+            const prompt = buildMergePrompt(issue);
+            onSendToAI(prompt);
+          }}
+          className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-indigo-400 hover:bg-indigo-500/10 rounded transition-colors"
+        >
+          <Send className="w-3 h-3" />
+          AI Merge
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Issue Card Component ───────────────────────────────────────────
+
+const IssueCard: React.FC<{
+  issue: AnalysisIssue;
+  lyrics: string;
+  onSendToAI: (prompt: string) => void;
+  onPickVersion: (issue: AnalysisIssue, version: 'a' | 'b') => void;
+}> = ({ issue, lyrics, onSendToAI, onPickVersion }) => {
+  const [expanded, setExpanded] = useState(false);
+  const config = SEVERITY_CONFIG[issue.severity];
+  const Icon = config.icon;
+  const hasDiff = issue.category === 'chorus-consistency' || issue.category === 'version-conflict';
+
+  return (
+    <div className={`border rounded-lg ${config.border} ${config.bg} transition-colors`}>
+      {/* Collapsed header — always visible */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+      >
+        <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${config.color}`} />
+        <span className="flex-1 text-xs font-medium text-zinc-200 truncate">
+          {issue.title}
+        </span>
+        {issue.sectionLabel && (
+          <span className="text-[10px] text-zinc-600 flex-shrink-0">
+            {issue.sectionLabel}
+          </span>
+        )}
+        {expanded ? (
+          <ChevronDown className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+        ) : (
+          <ChevronRight className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+        )}
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2 border-t border-zinc-800/50">
+          <p className="text-[11px] text-zinc-400 whitespace-pre-wrap mt-2">
+            {issue.description}
+          </p>
+
+          {/* Inline diff for chorus consistency / version conflicts */}
+          {hasDiff && issue.context?.versionsA && (
+            <InlineDiff
+              issue={issue}
+              onPickVersion={(v) => onPickVersion(issue, v)}
+              onSendToAI={onSendToAI}
+            />
+          )}
+
+          {/* Fix button for non-diff issues */}
+          {!hasDiff && issue.severity !== 'info' && (
+            <button
+              onClick={() => {
+                const prompt = buildFixPrompt(issue, lyrics);
+                onSendToAI(prompt);
+              }}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-indigo-400 hover:bg-indigo-500/10 rounded transition-colors"
+            >
+              <Send className="w-3 h-3" />
+              Send to AI for fix
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Prompt Builders ────────────────────────────────────────────────
+
+function buildFixPrompt(issue: AnalysisIssue, lyrics: string): string {
+  const ctx = issue.context;
+  const parts: string[] = [
+    `I need help fixing a songwriting issue.`,
+    ``,
+    `**Issue:** ${issue.title}`,
+    `**Category:** ${issue.category}`,
+    `**Severity:** ${issue.severity}`,
+    `**Description:** ${issue.description}`,
+  ];
+
+  if (ctx?.sectionLabel) {
+    parts.push(``, `**Section:** ${ctx.sectionLabel} (${ctx.sectionType})`);
+  }
+  if (ctx?.sectionLyrics) {
+    parts.push(``, `**Current section lyrics:**`, '```', ctx.sectionLyrics, '```');
+  }
+  if (ctx?.rhymeScheme) {
+    parts.push(`**Rhyme scheme detected:** ${ctx.rhymeScheme}`);
+  }
+  if (ctx?.syllableCounts) {
+    parts.push(`**Syllable counts per line:** ${ctx.syllableCounts.join(', ')}`);
+  }
+
+  parts.push(
+    ``,
+    `**What to preserve:** Keep the overall meaning and any strong imagery. Maintain the section's structural role.`,
+    `**What to fix:** ${issue.description}`,
+    ``,
+    `Please provide 3 alternative versions (A, B, C) that fix this issue while preserving the song's voice.`
+  );
+
+  return parts.join('\n');
+}
+
+function buildMergePrompt(issue: AnalysisIssue): string {
+  const ctx = issue.context;
+  return [
+    `I have two versions of "${ctx?.sectionLabel || 'a section'}" and need help merging the best parts.`,
+    ``,
+    `**Version A:**`,
+    '```',
+    ctx?.versionsA || '',
+    '```',
+    ``,
+    `**Version B:**`,
+    '```',
+    ctx?.versionsB || '',
+    '```',
+    ``,
+    ctx?.diffLines && ctx.diffLines.length > 0
+      ? `**Lines that differ:** ${ctx.diffLines.map(d => `Line ${d.lineNum}`).join(', ')}`
+      : '',
+    ``,
+    `Please create 3 merged versions (A, B, C) that combine the strongest lines from each. Keep the section's structural role (${ctx?.sectionType || 'unknown'}) in mind — ${
+      ctx?.sectionType === 'chorus'
+        ? 'choruses should be simple, repetitive, and singable'
+        : 'maintain the section\'s energy and purpose'
+    }.`,
+  ].filter(Boolean).join('\n');
+}
+
+// ─── Completeness Bar ───────────────────────────────────────────────
+
+function CompletenessBar({ score }: { score: CompletenessScore }) {
+  const color =
+    score.score >= 80 ? 'bg-emerald-500' :
+    score.score >= 50 ? 'bg-amber-500' :
+    'bg-red-500';
+
+  return (
+    <div className="p-3 border-b border-zinc-800">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+          <BarChart3 className="w-3 h-3" />
+          Structure
+        </span>
+        <span className="text-xs font-bold text-zinc-300">{score.score}%</span>
+      </div>
+      <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full ${color} rounded-full transition-all duration-500`}
+          style={{ width: `${score.score}%` }}
+        />
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {score.present.map((s, i) => (
+          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">
+            {s}
+          </span>
+        ))}
+        {score.missing.map((s, i) => (
+          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">
+            {s}
+          </span>
+        ))}
+        {score.extras.map((s, i) => (
+          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
+            {s}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ─────────────────────────────────────────────────
+
+export function SongFinisher() {
+  const { lyrics, addMessage, setLyrics } = useStore();
+  const [result, setResult] = useState<FullAnalysisResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [filterSeverity, setFilterSeverity] = useState<IssueSeverity | 'all'>('all');
+
+  const runAnalysis = useCallback(() => {
+    if (!lyrics.trim()) {
+      setResult(null);
+      return;
+    }
+    setIsAnalyzing(true);
+    // Use requestAnimationFrame to avoid blocking UI
+    requestAnimationFrame(() => {
+      const analysisResult = analyzeSong(lyrics);
+      setResult(analysisResult);
+      setIsAnalyzing(false);
+    });
+  }, [lyrics]);
+
+  // Auto-analyze on mount and when lyrics change (debounced)
+  useEffect(() => {
+    const timer = setTimeout(runAnalysis, 500);
+    return () => clearTimeout(timer);
+  }, [lyrics, runAnalysis]);
+
+  const handleSendToAI = (prompt: string) => {
+    addMessage({
+      id: Date.now().toString(),
+      role: 'user',
+      content: prompt,
+      timestamp: Date.now(),
+    });
+  };
+
+  const handlePickVersion = (issue: AnalysisIssue, version: 'a' | 'b') => {
+    const ctx = issue.context;
+    if (!ctx?.versionsA || !ctx?.versionsB) return;
+
+    const chosen = version === 'a' ? ctx.versionsA : ctx.versionsB;
+    const other = version === 'a' ? ctx.versionsB : ctx.versionsA;
+
+    // Replace the "other" version's text in the lyrics with the chosen version
+    // Find the other version in the lyrics and replace with chosen
+    const newLyrics = lyrics.replace(other, chosen);
+    if (newLyrics !== lyrics) {
+      setLyrics(newLyrics);
+    }
+  };
+
+  const filteredIssues = result?.issues.filter(
+    i => filterSeverity === 'all' || i.severity === filterSeverity
+  ) || [];
+
+  // Count by severity
+  const counts: Record<IssueSeverity, number> = { error: 0, warning: 0, suggestion: 0, info: 0 };
+  for (const issue of result?.issues || []) {
+    counts[issue.severity]++;
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="p-3 border-b border-zinc-800 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+          <Wrench className="w-4 h-4" />
+          Song Finisher
         </div>
         <button
-          onClick={analyzeSong}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-sm font-medium transition-colors flex items-center gap-2"
+          onClick={runAnalysis}
+          disabled={isAnalyzing || !lyrics.trim()}
+          className="flex items-center gap-1 px-2 py-1 text-xs text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-colors disabled:opacity-30"
         >
-          <Sparkles className="w-4 h-4" />
-          Analyze Song
+          <RefreshCw className={`w-3 h-3 ${isAnalyzing ? 'animate-spin' : ''}`} />
+          Analyze
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {health ? (
-          <>
-            {/* Health Dashboard */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-                <div className="text-xs text-zinc-500 mb-1 uppercase tracking-wider font-semibold">Completeness</div>
-                <div className="text-lg font-medium text-zinc-200">
-                  {Math.min(100, health.completeness)}%
-                </div>
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-                <div className="text-xs text-zinc-500 mb-1 uppercase tracking-wider font-semibold">Chorus Consistency</div>
-                <div className="text-sm font-medium text-zinc-200 truncate">
-                  {health.chorusConsistency}
-                </div>
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-                <div className="text-xs text-zinc-500 mb-1 uppercase tracking-wider font-semibold">Rhyme Health</div>
-                <div className="text-sm font-medium text-zinc-200 truncate">
-                  {health.rhymeHealth}
-                </div>
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-                <div className="text-xs text-zinc-500 mb-1 uppercase tracking-wider font-semibold">Section Balance</div>
-                <div className="text-sm font-medium text-zinc-200 truncate">
-                  {health.sectionBalance}
-                </div>
-              </div>
-            </div>
+      {/* Completeness bar */}
+      {result && <CompletenessBar score={result.completeness} />}
 
-            {/* Suggestions List */}
-            <div className="space-y-3">
-              <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-2">Action Items</h3>
-              
-              {suggestions.length === 0 ? (
-                <div className="text-center py-8 text-zinc-500 bg-zinc-900/50 rounded-lg border border-zinc-800 border-dashed">
-                  <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-emerald-500/50" />
-                  <p>Your song looks great! No major issues found.</p>
-                </div>
-              ) : (
-                suggestions.map(suggestion => (
-                  <div 
-                    key={suggestion.id} 
-                    className={`p-4 rounded-lg border ${getColorForSeverity(suggestion.severity)}`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="mt-0.5">
-                        {getIconForType(suggestion.type)}
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="font-medium text-sm mb-1">{suggestion.title}</h4>
-                        <p className="text-xs opacity-80 leading-relaxed mb-3">
-                          {suggestion.description}
-                        </p>
-                        {suggestion.action && (
-                          <button
-                            onClick={() => handleAction(suggestion.action, suggestion)}
-                            className="text-xs px-3 py-1.5 bg-black/20 hover:bg-black/40 rounded border border-white/10 transition-colors font-medium"
-                          >
-                            {suggestion.action.label}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center text-zinc-500 space-y-4">
-            <Wrench className="w-12 h-12 opacity-20" />
-            <p className="text-sm text-center max-w-[250px]">
-              Click "Analyze Song" to scan your lyrics for structural issues, rhyme breaks, and inconsistencies.
+      {/* Severity filter pills */}
+      {result && result.issues.length > 0 && (
+        <div className="px-3 py-2 border-b border-zinc-800 flex items-center gap-1 flex-wrap">
+          <button
+            onClick={() => setFilterSeverity('all')}
+            className={`px-2 py-0.5 text-[10px] rounded-full transition-colors ${
+              filterSeverity === 'all'
+                ? 'bg-zinc-700 text-zinc-200'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            All ({result.issues.length})
+          </button>
+          {(['error', 'warning', 'suggestion', 'info'] as IssueSeverity[]).map(sev => {
+            if (counts[sev] === 0) return null;
+            const cfg = SEVERITY_CONFIG[sev];
+            return (
+              <button
+                key={sev}
+                onClick={() => setFilterSeverity(sev)}
+                className={`px-2 py-0.5 text-[10px] rounded-full transition-colors ${
+                  filterSeverity === sev
+                    ? `${cfg.bg} ${cfg.color}`
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {cfg.label} ({counts[sev]})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Issue list */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+        {!lyrics.trim() ? (
+          <div className="text-center text-zinc-600 text-xs mt-10">
+            <Wrench className="w-6 h-6 mx-auto mb-2 opacity-30" />
+            <p>Write some lyrics to analyze.</p>
+          </div>
+        ) : isAnalyzing ? (
+          <div className="text-center text-zinc-500 text-xs mt-10">
+            <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin opacity-50" />
+            Analyzing...
+          </div>
+        ) : filteredIssues.length === 0 && result ? (
+          <div className="text-center text-zinc-500 text-xs mt-10">
+            <CheckCircle2 className="w-6 h-6 mx-auto mb-2 text-emerald-500 opacity-50" />
+            <p>
+              {filterSeverity === 'all'
+                ? 'No issues found. Your song looks solid!'
+                : `No ${filterSeverity}-level issues.`}
             </p>
           </div>
+        ) : (
+          filteredIssues.map(issue => (
+            <IssueCard
+              key={issue.id}
+              issue={issue}
+              lyrics={lyrics}
+              onSendToAI={handleSendToAI}
+              onPickVersion={handlePickVersion}
+            />
+          ))
         )}
       </div>
     </div>

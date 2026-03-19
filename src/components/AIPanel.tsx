@@ -271,10 +271,7 @@ Current Template: ${currentTemplateId || 'None'}
       ) : activeTab === 'history' ? (
         <VersionHistory />
       ) : activeTab === 'finish' ? (
-        <SongFinisher onAction={(prompt) => {
-          setActiveTab('ai');
-          handleSend(prompt);
-        }} />
+        <SongFinisher />
       ) : (
         <LyricDebugger />
       )}

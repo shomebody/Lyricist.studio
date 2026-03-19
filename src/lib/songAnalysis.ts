@@ -1,493 +1,739 @@
-import { analyzeRhymeScheme, RhymePattern } from './arrangement';
+/**
+ * songAnalysis.ts — Deep lyric analysis engine.
+ *
+ * Analyzes lyrics for structural issues, consistency problems,
+ * redundancy, rhyme patterns, section identity violations, and
+ * completeness. Designed to catch real songwriting problems,
+ * not just formatting issues.
+ */
+
+import { parseStructuralTag, analyzeRhymeScheme, simpleRhymeCheck, SectionType } from './arrangement';
 import { countLineSyllables } from './syllables';
 
-export interface SectionBlock {
+// ─── Types ──────────────────────────────────────────────────────────
+
+export type IssueSeverity = 'error' | 'warning' | 'suggestion' | 'info';
+
+export interface AnalysisIssue {
   id: string;
-  tag: string;
-  type: string; // 'verse', 'chorus', 'pre-chorus', 'bridge', 'outro', 'intro', 'untagged'
-  lines: { text: string; index: number }[];
+  category: AnalysisCategory;
+  severity: IssueSeverity;
+  title: string;
+  description: string;
+  sectionLabel?: string;
+  lines?: number[];           // 1-based line numbers
+  context?: AnalysisContext;   // rich context for AI fix prompts
 }
 
-export function parseBlocks(lyrics: string): SectionBlock[] {
-  const blocks: SectionBlock[] = [];
-  let currentBlock: SectionBlock | null = null;
-  
-  const lines = lyrics.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    const isTag = trimmed.startsWith('[') && trimmed.endsWith(']');
-    
-    if (isTag) {
-      if (currentBlock) blocks.push(currentBlock);
-      const lowerTag = trimmed.toLowerCase();
-      let type = 'untagged';
-      if (lowerTag.includes('verse')) type = 'verse';
-      else if (lowerTag.includes('pre-chorus') || lowerTag.includes('prechorus') || lowerTag.includes('pre chorus')) type = 'pre-chorus';
-      else if (lowerTag.includes('chorus')) type = 'chorus';
-      else if (lowerTag.includes('bridge')) type = 'bridge';
-      else if (lowerTag.includes('outro')) type = 'outro';
-      else if (lowerTag.includes('intro')) type = 'intro';
-      
-      currentBlock = { id: `block-${i}`, tag: trimmed, type, lines: [] };
-    } else {
-      if (!currentBlock) {
-        currentBlock = { id: `block-untagged`, tag: '[Untagged]', type: 'untagged', lines: [] };
-      }
-      if (trimmed) {
-        // Remove performance cues like (echo) for analysis
-        const cleanText = trimmed.replace(/\([^)]+\)/g, '').trim();
-        if (cleanText) {
-          currentBlock.lines.push({ text: cleanText, index: i });
+export type AnalysisCategory =
+  | 'chorus-consistency'
+  | 'rhyme-pattern'
+  | 'echo-tail'
+  | 'redundancy'
+  | 'section-identity'
+  | 'version-conflict'
+  | 'completeness';
+
+export interface AnalysisContext {
+  sectionLyrics?: string;
+  sectionType?: string;
+  sectionLabel?: string;
+  rhymeScheme?: string;
+  syllableCounts?: number[];
+  versionsA?: string;
+  versionsB?: string;
+  diffLines?: { lineNum: number; a: string; b: string }[];
+}
+
+// ─── Parsed Section ─────────────────────────────────────────────────
+
+interface ParsedSection {
+  type: SectionType;
+  label: string;
+  tagLine: number;            // 1-based line number of the [Tag]
+  lines: { text: string; lineNum: number }[]; // lyric lines only (no blanks, no tags)
+}
+
+/**
+ * Parse lyrics into sections, extracting tag lines and lyric content.
+ */
+function parseSections(lyrics: string): ParsedSection[] {
+  const allLines = lyrics.split('\n');
+  const sections: ParsedSection[] = [];
+  let current: ParsedSection | null = null;
+
+  for (let i = 0; i < allLines.length; i++) {
+    const raw = allLines[i];
+    const trimmed = raw.trim();
+    const tag = parseStructuralTag(trimmed);
+
+    if (tag) {
+      current = {
+        type: tag.type,
+        label: tag.label,
+        tagLine: i + 1,
+        lines: [],
+      };
+      sections.push(current);
+      continue;
+    }
+
+    if (current && trimmed.length > 0) {
+      // Strip echo tails for analysis purposes but keep the raw text
+      current.lines.push({ text: trimmed, lineNum: i + 1 });
+    }
+  }
+
+  return sections;
+}
+
+/**
+ * Detect echo tail patterns in a line.
+ * Echo tails are parenthetical text that echoes part of the lyric line.
+ * e.g. "meditation (tation)", "weights in (get my weights in)"
+ */
+function isEchoTail(line: string): { isEcho: boolean; cleanLine: string; echoText: string } {
+  const match = line.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+  if (!match) return { isEcho: false, cleanLine: line, echoText: '' };
+
+  const mainText = match[1].trim();
+  const parenText = match[2].trim().toLowerCase();
+  const mainLower = mainText.toLowerCase();
+
+  // Check if parenthetical content is a suffix of the main text
+  const mainWords = mainLower.split(/\s+/);
+  const lastWord = mainWords[mainWords.length - 1] || '';
+
+  // Exact word echo: "station (station)"
+  if (mainLower.endsWith(parenText)) {
+    return { isEcho: true, cleanLine: mainText, echoText: parenText };
+  }
+
+  // Suffix echo: "meditation (tation)"
+  if (lastWord.length > 3 && lastWord.endsWith(parenText)) {
+    return { isEcho: true, cleanLine: mainText, echoText: parenText };
+  }
+  if (parenText.length > 2 && lastWord.endsWith(parenText)) {
+    return { isEcho: true, cleanLine: mainText, echoText: parenText };
+  }
+
+  // Phrase echo: "weights in (get my weights in)" — paren contains words from the line
+  const parenWords = parenText.split(/\s+/);
+  const mainWordSet = new Set(mainWords);
+  const overlapCount = parenWords.filter(w => mainWordSet.has(w)).length;
+  if (parenWords.length > 0 && overlapCount / parenWords.length >= 0.5) {
+    return { isEcho: true, cleanLine: mainText, echoText: parenText };
+  }
+
+  return { isEcho: false, cleanLine: line, echoText: '' };
+}
+
+/**
+ * Get the clean lyric text of a line, stripping echo tails.
+ */
+function cleanLyricLine(text: string): string {
+  const { isEcho, cleanLine } = isEchoTail(text);
+  return isEcho ? cleanLine : text;
+}
+
+/**
+ * Extract significant words from a line (lowercase, no stop words, no punctuation).
+ */
+function getSignificantWords(text: string): string[] {
+  const stopWords = new Set([
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'is', 'it', 'my', 'me', 'we', 'us', 'our', 'you',
+    'your', 'i', 'so', 'up', 'out', 'all', 'just', 'like', 'get', 'got',
+    'be', 'been', 'am', 'are', 'was', 'were', 'do', 'did', 'this', 'that',
+    'no', 'not', "don't", "won't", "can't", 'yeah', 'oh', 'na',
+  ]);
+  return text
+    .toLowerCase()
+    .replace(/[^a-z\s']/g, '')
+    .split(/\s+/)
+    .filter(w => w.length > 1 && !stopWords.has(w));
+}
+
+/**
+ * Calculate word overlap ratio between two lines.
+ */
+function wordOverlap(a: string, b: string): number {
+  const wordsA = getSignificantWords(a);
+  const wordsB = getSignificantWords(b);
+  if (wordsA.length === 0 || wordsB.length === 0) return 0;
+
+  const setB = new Set(wordsB);
+  const overlap = wordsA.filter(w => setB.has(w)).length;
+  return overlap / Math.max(wordsA.length, wordsB.length);
+}
+
+// ─── Analysis Functions ─────────────────────────────────────────────
+
+let _issueId = 0;
+function nextId(): string {
+  return `issue_${++_issueId}`;
+}
+
+/**
+ * 1. Chorus Consistency Check
+ * Find all sections of the same type (especially Chorus) and compare them
+ * line by line. Show specific diffs.
+ */
+function checkChorusConsistency(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
+
+  // Group sections by type
+  const byType = new Map<SectionType, ParsedSection[]>();
+  for (const sec of sections) {
+    const group = byType.get(sec.type) || [];
+    group.push(sec);
+    byType.set(sec.type, group);
+  }
+
+  for (const [type, group] of byType) {
+    if (group.length < 2) continue;
+    // Only check types that should be consistent (chorus, hook)
+    if (type !== 'chorus' && type !== 'hook') continue;
+
+    const reference = group[0];
+    for (let g = 1; g < group.length; g++) {
+      const compare = group[g];
+      const refLines = reference.lines.map(l => cleanLyricLine(l.text));
+      const cmpLines = compare.lines.map(l => cleanLyricLine(l.text));
+
+      const diffLines: { lineNum: number; a: string; b: string }[] = [];
+      const maxLen = Math.max(refLines.length, cmpLines.length);
+
+      for (let i = 0; i < maxLen; i++) {
+        const a = refLines[i] || '(missing)';
+        const b = cmpLines[i] || '(missing)';
+        if (a.toLowerCase() !== b.toLowerCase()) {
+          diffLines.push({
+            lineNum: i + 1,
+            a,
+            b,
+          });
         }
       }
-    }
-  }
-  if (currentBlock) blocks.push(currentBlock);
-  return blocks;
-}
 
-export interface SongStructureAnalysis {
-  blocks: SectionBlock[];
-  missingSections: string[];
-  duplicateSections: { tag: string; blocks: SectionBlock[] }[];
-  chorusConsistency: {
-    isIdentical: boolean;
-    differingLines: number;
-    totalLines: number;
-    score: number;
-  } | null;
-  emptySections: SectionBlock[];
-  completeness: number;
-}
+      if (diffLines.length > 0) {
+        const diffDesc = diffLines
+          .map(d => `  Line ${d.lineNum}:\n    "${reference.label}": ${d.a}\n    "${compare.label}": ${d.b}`)
+          .join('\n');
 
-export function analyzeSongStructure(lyrics: string): SongStructureAnalysis {
-  const blocks = parseBlocks(lyrics);
-  
-  const types = new Set(blocks.map(b => b.type));
-  const missingSections: string[] = [];
-  if (!types.has('verse')) missingSections.push('Verse');
-  if (!types.has('chorus')) missingSections.push('Chorus');
-  if (types.has('verse') && types.has('chorus') && !types.has('bridge')) missingSections.push('Bridge');
-
-  const tagMap = new Map<string, SectionBlock[]>();
-  for (const block of blocks) {
-    if (block.type !== 'untagged') {
-      const existing = tagMap.get(block.tag) || [];
-      existing.push(block);
-      tagMap.set(block.tag, existing);
-    }
-  }
-
-  const duplicateSections = Array.from(tagMap.entries())
-    .filter(([_, b]) => b.length > 1)
-    .map(([tag, b]) => ({ tag, blocks: b }));
-
-  let chorusConsistency = null;
-  const choruses = blocks.filter(b => b.type === 'chorus');
-  if (choruses.length > 1) {
-    const firstChorus = choruses[0];
-    let totalDiffering = 0;
-    let totalLines = firstChorus.lines.length;
-    
-    for (let i = 1; i < choruses.length; i++) {
-      const otherChorus = choruses[i];
-      const maxLines = Math.max(firstChorus.lines.length, otherChorus.lines.length);
-      for (let j = 0; j < maxLines; j++) {
-        const line1 = firstChorus.lines[j]?.text.toLowerCase() || '';
-        const line2 = otherChorus.lines[j]?.text.toLowerCase() || '';
-        if (line1 !== line2) {
-          totalDiffering++;
-        }
-      }
-      totalLines = Math.max(totalLines, otherChorus.lines.length);
-    }
-    
-    const maxPossibleDiffs = choruses.length > 1 ? (choruses.length - 1) * totalLines : 1;
-    const score = Math.max(0, 100 - (totalDiffering / maxPossibleDiffs) * 100);
-    
-    chorusConsistency = {
-      isIdentical: totalDiffering === 0,
-      differingLines: totalDiffering,
-      totalLines,
-      score
-    };
-  }
-
-  const emptySections = blocks.filter(b => b.lines.length < 2);
-
-  let completeness = 0;
-  if (types.has('verse')) completeness += 30;
-  if (types.has('chorus')) completeness += 40;
-  if (types.has('bridge')) completeness += 20;
-  if (blocks.length > 3) completeness += 10;
-
-  return {
-    blocks,
-    missingSections,
-    duplicateSections,
-    chorusConsistency,
-    emptySections,
-    completeness
-  };
-}
-
-export interface RhymeChainAnalysis {
-  sectionId: string;
-  tag: string;
-  pattern: RhymePattern;
-  groups: { lineIndex: number; group: string; endWord: string }[];
-  orphans: { lineIndex: number; text: string; endWord: string }[];
-  redundantPairs: { line1: number; line2: number; text1: string; text2: string }[];
-}
-
-function getWordOverlap(line1: string, line2: string): number {
-  const words1 = new Set(line1.toLowerCase().split(/\W+/).filter(w => w.length > 3));
-  const words2 = new Set(line2.toLowerCase().split(/\W+/).filter(w => w.length > 3));
-  if (words1.size === 0 || words2.size === 0) return 0;
-  
-  let overlap = 0;
-  for (const w of words1) {
-    if (words2.has(w)) overlap++;
-  }
-  return overlap / Math.max(words1.size, words2.size);
-}
-
-export function analyzeRhymeChains(lyrics: string): RhymeChainAnalysis[] {
-  const blocks = parseBlocks(lyrics);
-  const results: RhymeChainAnalysis[] = [];
-
-  for (const block of blocks) {
-    if (block.lines.length < 2) continue;
-    
-    const linesText = block.lines.map(l => l.text);
-    const { pattern, groups } = analyzeRhymeScheme(linesText);
-    
-    const groupCounts = new Map<string, number>();
-    for (const g of groups) {
-      if (g.group !== '-') {
-        groupCounts.set(g.group, (groupCounts.get(g.group) || 0) + 1);
-      }
-    }
-
-    const orphans: { lineIndex: number; text: string; endWord: string }[] = [];
-    for (const g of groups) {
-      // If a group only has 1 member and it's near the end, it might be an intentional cadence shift.
-      // We'll flag it as an orphan, and the UI can decide how to present it.
-      if (g.group !== '-' && groupCounts.get(g.group) === 1) {
-        orphans.push({
-          lineIndex: block.lines[g.lineIndex].index,
-          text: block.lines[g.lineIndex].text,
-          endWord: g.endWord
+        issues.push({
+          id: nextId(),
+          category: 'chorus-consistency',
+          severity: 'warning',
+          title: `${reference.label} and ${compare.label} differ`,
+          description: `${diffLines.length} line${diffLines.length > 1 ? 's' : ''} differ between these sections:\n${diffDesc}`,
+          sectionLabel: compare.label,
+          lines: [
+            ...diffLines.map(d => reference.lines[d.lineNum - 1]?.lineNum).filter(Boolean),
+            ...diffLines.map(d => compare.lines[d.lineNum - 1]?.lineNum).filter(Boolean),
+          ] as number[],
+          context: {
+            versionsA: reference.lines.map(l => l.text).join('\n'),
+            versionsB: compare.lines.map(l => l.text).join('\n'),
+            sectionLabel: `${reference.label} vs ${compare.label}`,
+            sectionType: type,
+            diffLines,
+          },
         });
       }
     }
+  }
 
-    const redundantPairs: { line1: number; line2: number; text1: string; text2: string }[] = [];
-    for (let i = 0; i < block.lines.length; i++) {
-      for (let j = i + 1; j < block.lines.length; j++) {
-        const overlap = getWordOverlap(block.lines[i].text, block.lines[j].text);
-        if (overlap > 0.7 && block.lines[i].text.toLowerCase() !== block.lines[j].text.toLowerCase()) {
-          redundantPairs.push({
-            line1: block.lines[i].index,
-            line2: block.lines[j].index,
-            text1: block.lines[i].text,
-            text2: block.lines[j].text
+  return issues;
+}
+
+/**
+ * 2. Rhyme Chain Detection with Intentional Break Awareness
+ */
+function checkRhymePatterns(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
+
+  for (const section of sections) {
+    const lyricLines = section.lines.map(l => cleanLyricLine(l.text));
+    if (lyricLines.length < 3) continue;
+
+    const { groups } = analyzeRhymeScheme(lyricLines);
+
+    // Look for rhyme chains that break
+    // A chain is 3+ consecutive lines with the same rhyme group
+    let chainStart = 0;
+    let chainGroup = groups[0]?.group || '-';
+
+    for (let i = 1; i <= groups.length; i++) {
+      const currentGroup = i < groups.length ? groups[i].group : '__END__';
+
+      if (currentGroup !== chainGroup || i === groups.length) {
+        const chainLen = i - chainStart;
+
+        if (chainLen >= 3 && i < groups.length) {
+          // Chain of 3+ broke — check if the break is at the end of the section
+          const remainingLines = groups.length - i;
+          const isAtSectionEnd = remainingLines <= 2;
+
+          if (isAtSectionEnd) {
+            issues.push({
+              id: nextId(),
+              category: 'rhyme-pattern',
+              severity: 'info',
+              title: `Possible cadence shift in ${section.label}`,
+              description: `Lines ${chainStart + 1}-${i} rhyme on "${groups[chainStart].endWord}" pattern, then lines ${i + 1}-${groups.length} break away. This looks like an intentional cadence shift before the next section — a common songwriting technique for transitions.`,
+              sectionLabel: section.label,
+              lines: section.lines.slice(i).map(l => l.lineNum),
+              context: {
+                sectionLyrics: lyricLines.join('\n'),
+                sectionType: section.type,
+                sectionLabel: section.label,
+                rhymeScheme: groups.map(g => g.group).join(''),
+              },
+            });
+          } else {
+            issues.push({
+              id: nextId(),
+              category: 'rhyme-pattern',
+              severity: 'suggestion',
+              title: `Broken rhyme chain in ${section.label}`,
+              description: `Lines ${chainStart + 1}-${i} establish a strong "${groups[chainStart].endWord}" rhyme pattern, but line ${i + 1} ("${groups[i]?.endWord}") breaks it mid-section. Consider maintaining the chain or making the break more intentional.`,
+              sectionLabel: section.label,
+              lines: [section.lines[i]?.lineNum].filter(Boolean) as number[],
+              context: {
+                sectionLyrics: lyricLines.join('\n'),
+                sectionType: section.type,
+                sectionLabel: section.label,
+                rhymeScheme: groups.map(g => g.group).join(''),
+              },
+            });
+          }
+        }
+
+        chainStart = i;
+        chainGroup = currentGroup;
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * 3. Echo Tail Recognition — flag echo tails as info, not errors.
+ * This runs to explicitly annotate echo tails so other analyzers skip them.
+ * Returns info-level issues to confirm recognition.
+ */
+function recognizeEchoTails(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
+
+  for (const section of sections) {
+    for (const line of section.lines) {
+      const { isEcho, echoText } = isEchoTail(line.text);
+      if (isEcho) {
+        issues.push({
+          id: nextId(),
+          category: 'echo-tail',
+          severity: 'info',
+          title: `Echo tail detected in ${section.label}`,
+          description: `"(${echoText})" is a Suno echo/performance cue, not a separate lyric line. This will render as a vocal echo effect.`,
+          sectionLabel: section.label,
+          lines: [line.lineNum],
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * 4. Redundant Line Detection
+ * Compare lines within a section for semantic overlap.
+ */
+function checkRedundancy(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
+
+  for (const section of sections) {
+    const cleanLines = section.lines.map(l => ({
+      ...l,
+      clean: cleanLyricLine(l.text),
+    }));
+
+    for (let i = 0; i < cleanLines.length; i++) {
+      for (let j = i + 1; j < cleanLines.length; j++) {
+        const a = cleanLines[i];
+        const b = cleanLines[j];
+
+        // Check end-word similarity
+        const endWordA = getSignificantWords(a.clean).slice(-1)[0] || '';
+        const endWordB = getSignificantWords(b.clean).slice(-1)[0] || '';
+        const sameEndWord = endWordA && endWordB && (endWordA === endWordB || simpleRhymeCheck(endWordA, endWordB));
+
+        // Check overall word overlap
+        const overlap = wordOverlap(a.clean, b.clean);
+
+        // High overlap + similar end words = likely redundant
+        if (overlap >= 0.5 || (overlap >= 0.3 && sameEndWord)) {
+          issues.push({
+            id: nextId(),
+            category: 'redundancy',
+            severity: 'suggestion',
+            title: `Similar lines in ${section.label}`,
+            description: `These lines express a similar idea:\n  Line ${a.lineNum}: "${a.text}"\n  Line ${b.lineNum}: "${b.text}"\nConsider differentiating them or cutting one to keep the section tight.`,
+            sectionLabel: section.label,
+            lines: [a.lineNum, b.lineNum],
+            context: {
+              sectionLyrics: section.lines.map(l => l.text).join('\n'),
+              sectionType: section.type,
+              sectionLabel: section.label,
+            },
           });
         }
       }
     }
-
-    results.push({
-      sectionId: block.id,
-      tag: block.tag,
-      pattern,
-      groups: groups.map(g => ({ ...g, lineIndex: block.lines[g.lineIndex].index })),
-      orphans,
-      redundantPairs
-    });
   }
 
-  return results;
+  return issues;
 }
 
-export interface SectionIdentityAnalysis {
-  sectionId: string;
-  tag: string;
-  type: string;
-  expectedJob: string;
-  avgSyllables: number;
-  issues: string[];
-}
+/**
+ * 5. Section Identity Analysis
+ * Each section type has a structural job. Flag violations.
+ */
+function checkSectionIdentity(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
 
-export function analyzeSectionIdentity(lyrics: string): SectionIdentityAnalysis[] {
-  const blocks = parseBlocks(lyrics);
-  const results: SectionIdentityAnalysis[] = [];
+  // Gather syllable stats per section
+  const sectionStats = sections.map(sec => {
+    const cleanLines = sec.lines.map(l => cleanLyricLine(l.text));
+    const syllables = cleanLines.map(countLineSyllables);
+    const avgSyllables = syllables.length > 0
+      ? syllables.reduce((s, v) => s + v, 0) / syllables.length
+      : 0;
+    const words = getSignificantWords(cleanLines.join(' '));
+    return { section: sec, avgSyllables, lineCount: cleanLines.length, words, syllables };
+  });
 
-  let chorusAvgSyllables = 0;
-  const choruses = blocks.filter(b => b.type === 'chorus');
-  if (choruses.length > 0) {
-    let totalSyl = 0;
-    let totalLines = 0;
-    for (const c of choruses) {
-      for (const l of c.lines) {
-        totalSyl += countLineSyllables(l.text);
-        totalLines++;
-      }
-    }
-    chorusAvgSyllables = totalLines > 0 ? totalSyl / totalLines : 0;
-  }
+  // Find verses and choruses for comparison
+  const verses = sectionStats.filter(s => s.section.type === 'verse');
+  const choruses = sectionStats.filter(s => s.section.type === 'chorus');
+  const preChorus = sectionStats.filter(s => s.section.type === 'pre-chorus');
+  const bridges = sectionStats.filter(s => s.section.type === 'bridge');
 
-  for (const block of blocks) {
-    if (block.lines.length === 0) continue;
+  // Chorus denser than verse?
+  if (verses.length > 0 && choruses.length > 0) {
+    const avgVerseSlbl = verses.reduce((s, v) => s + v.avgSyllables, 0) / verses.length;
+    const avgChorusSlbl = choruses.reduce((s, v) => s + v.avgSyllables, 0) / choruses.length;
 
-    let expectedJob = '';
-    const issues: string[] = [];
-    let totalSyl = 0;
-    for (const l of block.lines) {
-      totalSyl += countLineSyllables(l.text);
-    }
-    const avgSyllables = totalSyl / block.lines.length;
-
-    if (block.type === 'verse') {
-      expectedJob = 'Story/Setup: Establish the narrative, characters, and setting.';
-      if (chorusAvgSyllables > 0 && avgSyllables < chorusAvgSyllables - 2) {
-        issues.push('Verse is less dense than the chorus. Verses usually have more syllables to tell the story.');
-      }
-    } else if (block.type === 'pre-chorus') {
-      expectedJob = 'Tension/Build: Transition from the verse to the chorus, building anticipation.';
-      if (block.lines.length > 4) {
-        issues.push('Pre-chorus is quite long. It should be a quick build to the chorus.');
-      }
-    } else if (block.type === 'chorus') {
-      expectedJob = 'Hook/Payoff: The emotional core and most memorable part of the song.';
-      // It's okay if chorus is simpler
-    } else if (block.type === 'bridge') {
-      expectedJob = 'Contrast/Reveal: Introduce new musical/lyrical ideas, a twist, or a new perspective.';
-      // Check vocabulary overlap with verse 1 if it exists
-      const verse1 = blocks.find(b => b.type === 'verse');
-      if (verse1) {
-        let overlapCount = 0;
-        for (const bl of block.lines) {
-          for (const vl of verse1.lines) {
-            if (getWordOverlap(bl.text, vl.text) > 0.4) {
-              overlapCount++;
-            }
-          }
-        }
-        if (overlapCount > block.lines.length / 2) {
-          issues.push('Bridge uses very similar vocabulary to Verse 1. It should provide contrast.');
-        }
-      }
-    } else {
-      expectedJob = 'Support the main structure of the song.';
-    }
-
-    results.push({
-      sectionId: block.id,
-      tag: block.tag,
-      type: block.type,
-      expectedJob,
-      avgSyllables,
-      issues
-    });
-  }
-
-  return results;
-}
-
-export interface VersionConflict {
-  tag: string;
-  blockA: SectionBlock;
-  blockB: SectionBlock;
-  similarity: number;
-}
-
-export function detectVersionConflicts(lyrics: string): VersionConflict[] {
-  const blocks = parseBlocks(lyrics);
-  const conflicts: VersionConflict[] = [];
-
-  // 1. Same exact tag
-  const tagMap = new Map<string, SectionBlock[]>();
-  for (const block of blocks) {
-    if (block.type !== 'untagged') {
-      const existing = tagMap.get(block.tag) || [];
-      existing.push(block);
-      tagMap.set(block.tag, existing);
+    if (avgChorusSlbl > avgVerseSlbl + 1.5) {
+      issues.push({
+        id: nextId(),
+        category: 'section-identity',
+        severity: 'warning',
+        title: 'Chorus is denser than verse',
+        description: `Your chorus averages ${avgChorusSlbl.toFixed(1)} syllables/line vs ${avgVerseSlbl.toFixed(1)} in verses. Choruses should be simpler and more singable than verses. Consider shortening chorus lines or adding density to verses.`,
+        lines: choruses.flatMap(c => c.section.lines.map(l => l.lineNum)),
+        context: {
+          sectionLyrics: choruses[0]?.section.lines.map(l => l.text).join('\n'),
+          sectionType: 'chorus',
+          syllableCounts: choruses[0]?.syllables,
+        },
+      });
     }
   }
 
-  for (const [tag, b] of tagMap.entries()) {
-    if (b.length > 1 && tag.toLowerCase().includes('verse')) {
-      // Multiple [Verse 1] tags? That's a conflict.
-      // But multiple [Chorus] tags are normal.
-      const match = tag.match(/\d+/);
-      if (match || tag.toLowerCase() === '[verse]') {
-         conflicts.push({
-           tag,
-           blockA: b[0],
-           blockB: b[1],
-           similarity: 1 // Same tag
-         });
-      }
-    }
-  }
+  // Bridge uses same vocabulary as verses? (no contrast)
+  if (bridges.length > 0 && verses.length > 0) {
+    for (const bridge of bridges) {
+      const verseWordPool = new Set(verses.flatMap(v => v.words));
+      const bridgeWords = bridge.words;
+      if (bridgeWords.length < 3) continue;
 
-  // 2. Similar content, different tags (e.g. Verse 1 and Verse 2 are 90% identical)
-  const verses = blocks.filter(b => b.type === 'verse');
-  for (let i = 0; i < verses.length; i++) {
-    for (let j = i + 1; j < verses.length; j++) {
-      const v1 = verses[i];
-      const v2 = verses[j];
-      
-      let totalOverlap = 0;
-      const maxLines = Math.max(v1.lines.length, v2.lines.length);
-      if (maxLines === 0) continue;
+      const overlapCount = bridgeWords.filter(w => verseWordPool.has(w)).length;
+      const overlapRatio = overlapCount / bridgeWords.length;
 
-      for (let k = 0; k < Math.min(v1.lines.length, v2.lines.length); k++) {
-        totalOverlap += getWordOverlap(v1.lines[k].text, v2.lines[k].text);
-      }
-      
-      const avgOverlap = totalOverlap / maxLines;
-      if (avgOverlap > 0.6 && v1.tag !== v2.tag) {
-        conflicts.push({
-          tag: `${v1.tag} vs ${v2.tag}`,
-          blockA: v1,
-          blockB: v2,
-          similarity: avgOverlap
+      if (overlapRatio > 0.6) {
+        issues.push({
+          id: nextId(),
+          category: 'section-identity',
+          severity: 'suggestion',
+          title: `${bridge.section.label} lacks contrast with verses`,
+          description: `${Math.round(overlapRatio * 100)}% of the bridge's vocabulary also appears in your verses. Bridges should offer a new perspective, different imagery, or a twist. Try introducing new metaphors or shifting the narrative angle.`,
+          sectionLabel: bridge.section.label,
+          lines: bridge.section.lines.map(l => l.lineNum),
+          context: {
+            sectionLyrics: bridge.section.lines.map(l => l.text).join('\n'),
+            sectionType: 'bridge',
+            sectionLabel: bridge.section.label,
+          },
         });
       }
     }
   }
 
-  return conflicts;
-}
+  // Pre-chorus steals the chorus payoff?
+  if (preChorus.length > 0 && choruses.length > 0) {
+    for (const pre of preChorus) {
+      for (const chorus of choruses) {
+        const preWords = new Set(pre.words);
+        const chorusWords = chorus.words;
+        if (chorusWords.length < 2) continue;
 
-export interface Suggestion {
-  id: string;
-  type: 'structure' | 'rhyme' | 'identity' | 'consistency' | 'conflict';
-  severity: 'error' | 'warning' | 'suggestion';
-  title: string;
-  description: string;
-  action?: {
-    label: string;
-    type: 'sync_chorus' | 'generate_section' | 'fix_rhyme' | 'resolve_conflict';
-    data?: any;
-  };
-}
+        // Check if the pre-chorus's most distinctive words appear in the chorus
+        const chorusKeyWords = chorusWords.filter(w => {
+          // Words that appear in chorus but not commonly in verses
+          const verseFreq = verses.reduce((c, v) => c + (v.words.includes(w) ? 1 : 0), 0);
+          return verseFreq === 0; // unique to chorus
+        });
 
-export function generateCompletionSuggestions(lyrics: string): Suggestion[] {
-  const suggestions: Suggestion[] = [];
-  
-  const structure = analyzeSongStructure(lyrics);
-  const rhymes = analyzeRhymeChains(lyrics);
-  const identity = analyzeSectionIdentity(lyrics);
-  const conflicts = detectVersionConflicts(lyrics);
-
-  // Structure Suggestions
-  if (structure.missingSections.length > 0) {
-    const missing = structure.missingSections.join(' and ');
-    suggestions.push({
-      id: `missing-${missing}`,
-      type: 'structure',
-      severity: 'warning',
-      title: `Missing ${missing}`,
-      description: `Your song has ${structure.blocks.filter(b => b.type !== 'untagged').map(b => b.tag).join(', ')}. Consider adding ${missing}.`,
-      action: {
-        label: `Generate ${structure.missingSections[0]}`,
-        type: 'generate_section',
-        data: { sectionType: structure.missingSections[0] }
-      }
-    });
-  }
-
-  if (structure.chorusConsistency && !structure.chorusConsistency.isIdentical) {
-    suggestions.push({
-      id: 'chorus-sync',
-      type: 'consistency',
-      severity: 'warning',
-      title: 'Inconsistent Choruses',
-      description: `Your choruses differ on ${structure.chorusConsistency.differingLines} lines. Usually, choruses should be identical for maximum hook impact.`,
-      action: {
-        label: 'Sync Choruses',
-        type: 'sync_chorus',
-        data: { blocks: structure.blocks.filter(b => b.type === 'chorus') }
-      }
-    });
-  }
-
-  for (const empty of structure.emptySections) {
-    if (empty.type !== 'untagged') {
-      suggestions.push({
-        id: `empty-${empty.id}`,
-        type: 'structure',
-        severity: 'error',
-        title: `Empty Section: ${empty.tag}`,
-        description: `This section has fewer than 2 lines.`,
-      });
-    }
-  }
-
-  // Rhyme Suggestions
-  for (const r of rhymes) {
-    for (const orphan of r.orphans) {
-      const isLastLine = orphan.lineIndex === r.groups[r.groups.length - 1].lineIndex;
-      const severity = isLastLine ? 'suggestion' : 'warning';
-      const title = isLastLine ? 'Possible Cadence Shift' : 'Rhyme Chain Break';
-      
-      suggestions.push({
-        id: `orphan-${orphan.lineIndex}`,
-        type: 'rhyme',
-        severity,
-        title,
-        description: `Line ${orphan.lineIndex + 1} in ${r.tag} doesn't rhyme with anything else in the section.`,
-        action: {
-          label: 'Find Rhymes',
-          type: 'fix_rhyme',
-          data: { lineIndex: orphan.lineIndex, word: orphan.endWord }
+        const stolenCount = chorusKeyWords.filter(w => preWords.has(w)).length;
+        if (chorusKeyWords.length > 0 && stolenCount / chorusKeyWords.length > 0.5) {
+          issues.push({
+            id: nextId(),
+            category: 'section-identity',
+            severity: 'warning',
+            title: `${pre.section.label} may steal the chorus payoff`,
+            description: `The pre-chorus uses key words that should be reserved for the chorus hook. The pre-chorus should build tension, not deliver the punchline early. Consider replacing shared phrases in the pre-chorus with transitional language.`,
+            sectionLabel: pre.section.label,
+            lines: pre.section.lines.map(l => l.lineNum),
+            context: {
+              sectionLyrics: pre.section.lines.map(l => l.text).join('\n'),
+              sectionType: 'pre-chorus',
+              sectionLabel: pre.section.label,
+            },
+          });
         }
-      });
-    }
-
-    for (const pair of r.redundantPairs) {
-      suggestions.push({
-        id: `redundant-${pair.line1}-${pair.line2}`,
-        type: 'identity',
-        severity: 'warning',
-        title: 'Redundant Lines',
-        description: `Lines ${pair.line1 + 1} and ${pair.line2 + 1} in ${r.tag} say very similar things.`,
-      });
-    }
-  }
-
-  // Identity Suggestions
-  for (const id of identity) {
-    for (const issue of id.issues) {
-      suggestions.push({
-        id: `identity-${id.sectionId}-${issue.substring(0, 10)}`,
-        type: 'identity',
-        severity: 'suggestion',
-        title: `Section Identity: ${id.tag}`,
-        description: issue,
-      });
-    }
-  }
-
-  // Conflict Suggestions
-  for (const conflict of conflicts) {
-    suggestions.push({
-      id: `conflict-${conflict.blockA.id}-${conflict.blockB.id}`,
-      type: 'conflict',
-      severity: 'error',
-      title: `Version Conflict: ${conflict.tag}`,
-      description: `You have multiple versions of this section.`,
-      action: {
-        label: 'Resolve Conflict',
-        type: 'resolve_conflict',
-        data: conflict
       }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * 6. Version Conflict Detection
+ * Find duplicate tag names or sections with >50% word overlap.
+ */
+function checkVersionConflicts(sections: ParsedSection[]): AnalysisIssue[] {
+  const issues: AnalysisIssue[] = [];
+  const seenLabels = new Map<string, ParsedSection[]>();
+
+  for (const sec of sections) {
+    const normalized = sec.label.toLowerCase().trim();
+    const group = seenLabels.get(normalized) || [];
+    group.push(sec);
+    seenLabels.set(normalized, group);
+  }
+
+  // Exact duplicate labels
+  for (const [label, group] of seenLabels) {
+    if (group.length < 2) continue;
+    // Choruses repeating is expected — only flag if content differs significantly
+    if (group[0].type === 'chorus' || group[0].type === 'hook') continue;
+
+    for (let i = 1; i < group.length; i++) {
+      const a = group[0];
+      const b = group[i];
+      const textA = a.lines.map(l => cleanLyricLine(l.text)).join('\n');
+      const textB = b.lines.map(l => cleanLyricLine(l.text)).join('\n');
+      const overlap = wordOverlap(textA, textB);
+
+      if (overlap > 0.5) {
+        issues.push({
+          id: nextId(),
+          category: 'version-conflict',
+          severity: 'warning',
+          title: `Possible alternate versions: "${a.label}"`,
+          description: `Two [${a.label}] sections have ${Math.round(overlap * 100)}% word overlap. This may be an unresolved alternate version. Choose one or merge the best lines.`,
+          sectionLabel: a.label,
+          lines: [...a.lines.map(l => l.lineNum), ...b.lines.map(l => l.lineNum)],
+          context: {
+            versionsA: textA,
+            versionsB: textB,
+            sectionLabel: a.label,
+            sectionType: a.type,
+            diffLines: (() => {
+              const linesA = textA.split('\n');
+              const linesB = textB.split('\n');
+              const diffs: { lineNum: number; a: string; b: string }[] = [];
+              const maxLen = Math.max(linesA.length, linesB.length);
+              for (let j = 0; j < maxLen; j++) {
+                const la = linesA[j] || '(missing)';
+                const lb = linesB[j] || '(missing)';
+                if (la.toLowerCase() !== lb.toLowerCase()) {
+                  diffs.push({ lineNum: j + 1, a: la, b: lb });
+                }
+              }
+              return diffs;
+            })(),
+          },
+        });
+      }
+    }
+  }
+
+  // Also check non-identical labels with high overlap
+  const allSections = [...sections];
+  for (let i = 0; i < allSections.length; i++) {
+    for (let j = i + 1; j < allSections.length; j++) {
+      const a = allSections[i];
+      const b = allSections[j];
+      if (a.label.toLowerCase() === b.label.toLowerCase()) continue; // already handled
+      if (a.type !== b.type) continue; // different types are expected to differ
+
+      const textA = a.lines.map(l => cleanLyricLine(l.text)).join(' ');
+      const textB = b.lines.map(l => cleanLyricLine(l.text)).join(' ');
+      const overlap = wordOverlap(textA, textB);
+
+      if (overlap > 0.5 && a.type !== 'chorus' && a.type !== 'hook') {
+        issues.push({
+          id: nextId(),
+          category: 'version-conflict',
+          severity: 'suggestion',
+          title: `"${a.label}" and "${b.label}" are very similar`,
+          description: `These sections share ${Math.round(overlap * 100)}% of their vocabulary. If they're alternate versions, pick the stronger one. If both stay, differentiate them more.`,
+          sectionLabel: `${a.label} / ${b.label}`,
+          lines: [...a.lines.map(l => l.lineNum), ...b.lines.map(l => l.lineNum)],
+          context: {
+            versionsA: a.lines.map(l => l.text).join('\n'),
+            versionsB: b.lines.map(l => l.text).join('\n'),
+            sectionLabel: `${a.label} vs ${b.label}`,
+            sectionType: a.type,
+          },
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * 7. Completeness Scoring
+ * Score based on standard song structure presence.
+ */
+export interface CompletenessScore {
+  score: number;        // 0-100
+  present: string[];
+  missing: string[];
+  extras: string[];
+}
+
+function checkCompleteness(sections: ParsedSection[]): { score: CompletenessScore; issues: AnalysisIssue[] } {
+  const issues: AnalysisIssue[] = [];
+
+  // Standard pop/rock structure expectations
+  const expectedTypes: { type: SectionType; label: string; minCount: number }[] = [
+    { type: 'verse', label: 'Verse', minCount: 2 },
+    { type: 'chorus', label: 'Chorus', minCount: 2 },
+    { type: 'bridge', label: 'Bridge', minCount: 1 },
+  ];
+
+  // Optional but valuable
+  const optionalTypes: { type: SectionType; label: string }[] = [
+    { type: 'pre-chorus', label: 'Pre-Chorus' },
+    { type: 'intro', label: 'Intro' },
+    { type: 'outro', label: 'Outro' },
+  ];
+
+  const typeCounts = new Map<SectionType, number>();
+  for (const sec of sections) {
+    typeCounts.set(sec.type, (typeCounts.get(sec.type) || 0) + 1);
+  }
+
+  const present: string[] = [];
+  const missing: string[] = [];
+  const extras: string[] = [];
+  let totalExpected = 0;
+  let totalPresent = 0;
+
+  for (const exp of expectedTypes) {
+    const count = typeCounts.get(exp.type) || 0;
+    totalExpected += exp.minCount;
+    if (count >= exp.minCount) {
+      present.push(`${exp.label} (${count})`);
+      totalPresent += exp.minCount;
+    } else if (count > 0) {
+      present.push(`${exp.label} (${count}/${exp.minCount})`);
+      totalPresent += count;
+    } else {
+      missing.push(exp.label);
+    }
+  }
+
+  for (const opt of optionalTypes) {
+    const count = typeCounts.get(opt.type) || 0;
+    if (count > 0) {
+      extras.push(`${opt.label} (${count})`);
+      totalPresent += 0.5; // partial credit for optional sections
+      totalExpected += 0.5;
+    }
+  }
+
+  // Check for empty sections (tag exists but no lyrics)
+  for (const sec of sections) {
+    if (sec.lines.length === 0 && sec.type !== 'instrumental' && sec.type !== 'intro' && sec.type !== 'outro') {
+      issues.push({
+        id: nextId(),
+        category: 'completeness',
+        severity: 'warning',
+        title: `${sec.label} is empty`,
+        description: `The [${sec.label}] tag exists but has no lyrics. Write content or remove the tag.`,
+        sectionLabel: sec.label,
+        lines: [sec.tagLine],
+      });
+    }
+  }
+
+  const score = totalExpected > 0 ? Math.round((totalPresent / totalExpected) * 100) : 0;
+
+  if (missing.length > 0) {
+    issues.push({
+      id: nextId(),
+      category: 'completeness',
+      severity: missing.includes('Chorus') ? 'error' : 'suggestion',
+      title: `Missing sections: ${missing.join(', ')}`,
+      description: `A standard song structure includes ${missing.join(', ')}. Your song is ${score}% complete structurally.`,
     });
   }
 
-  return suggestions;
+  return { score: { score, present, missing, extras }, issues };
+}
+
+// ─── Main Analysis Entry Point ──────────────────────────────────────
+
+export interface FullAnalysisResult {
+  issues: AnalysisIssue[];
+  completeness: CompletenessScore;
+  sectionCount: number;
+  lineCount: number;
+}
+
+/**
+ * Run all analyses on the given lyrics text.
+ */
+export function analyzeSong(lyrics: string): FullAnalysisResult {
+  _issueId = 0; // reset for deterministic IDs within a run
+  const sections = parseSections(lyrics);
+  const lineCount = lyrics.split('\n').filter(l => l.trim().length > 0).length;
+
+  const allIssues: AnalysisIssue[] = [];
+
+  allIssues.push(...checkChorusConsistency(sections));
+  allIssues.push(...checkRhymePatterns(sections));
+  allIssues.push(...recognizeEchoTails(sections));
+  allIssues.push(...checkRedundancy(sections));
+  allIssues.push(...checkSectionIdentity(sections));
+  allIssues.push(...checkVersionConflicts(sections));
+
+  const { score, issues: completenessIssues } = checkCompleteness(sections);
+  allIssues.push(...completenessIssues);
+
+  return {
+    issues: allIssues,
+    completeness: score,
+    sectionCount: sections.length,
+    lineCount,
+  };
 }
