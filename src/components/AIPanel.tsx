@@ -41,7 +41,7 @@ export function AIPanel() {
     setIsLoading(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
       
       const systemInstruction = `
 You are an expert songwriting co-writer embedded in a lyric editing tool.
