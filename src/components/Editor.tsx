@@ -7,6 +7,7 @@ import { findCliches, ClicheMatch } from '../lib/cliches';
 import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
 import { exportForSuno, SECTION_BG_COLORS, SectionType } from '../lib/arrangement';
 import { ArrangementStatusBar } from './ArrangementStatusBar';
+import { PocketPlayer } from './PocketPlayer';
 import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { doc, setDoc, addDoc, collection } from 'firebase/firestore';
@@ -45,6 +46,7 @@ export function LyricEditor() {
   const [isSaving, setIsSaving] = useState(false);
   const [isFormatting, setIsFormatting] = useState(false);
   const [projectTitle, setProjectTitle] = useState('Untitled Song');
+  const [currentEditorLine, setCurrentEditorLine] = useState('');
 
   const rhymeMap = useMemo(() => {
     const map = new Map<number, { group: string, pattern: string, isFirstOfSection: boolean, sectionPattern: string, rhymeType: string }>();
@@ -295,6 +297,15 @@ export function LyricEditor() {
       editor.setPosition({ lineNumber: line, column: 1 });
       editor.focus();
     });
+
+    // Track current line for PocketPlayer scoring
+    editor.onDidChangeCursorPosition((e: any) => {
+      const model = editor.getModel();
+      if (model) {
+        const lineContent = model.getLineContent(e.position.lineNumber) || '';
+        setCurrentEditorLine(lineContent);
+      }
+    });
   };
 
   useEffect(() => {
@@ -487,6 +498,7 @@ ${lyrics}`
       </div>
 
       <ArrangementStatusBar />
+      <PocketPlayer currentLine={currentEditorLine} />
 
       {/* Monaco Editor — gutter info rendered via decorations, not separate divs */}
       <div className="flex-1 relative overflow-hidden">

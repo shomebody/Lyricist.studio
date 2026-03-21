@@ -34,6 +34,7 @@ import {
   analyzeRhymeScheme,
   SectionType,
 } from '../lib/arrangement';
+import type { VibeSelection } from '../lib/prosody';
 import { countLineSyllables } from '../lib/syllables';
 
 // ─── Store Interface ────────────────────────────────────────────────
@@ -65,6 +66,11 @@ interface ArrangementState {
   addSnapshot: (lyrics: string, stylePrompt: string, templateId: string | null, label?: string) => void;
   deleteSnapshot: (id: string) => void;
   renameSnapshot: (id: string, label: string) => void;
+
+  // Vibe selections per section (for Pocket Rhythm Player)
+  vibeSelections: Record<string, Partial<VibeSelection>>;
+  setVibeForSection: (sectionId: string, vibe: Partial<VibeSelection>) => void;
+  clearVibeForSection: (sectionId: string) => void;
 
   // UI state
   isTemplateBuilderOpen: boolean;
@@ -325,6 +331,20 @@ export const useArrangementStore = create<ArrangementState>((set, get) => ({
     set((state) => ({
       snapshots: state.snapshots.map((s) => (s.id === id ? { ...s, label } : s)),
     }));
+  },
+
+  // Vibe selections per section
+  vibeSelections: {},
+  setVibeForSection: (sectionId, vibe) => {
+    set((state) => ({
+      vibeSelections: { ...state.vibeSelections, [sectionId]: { ...state.vibeSelections[sectionId], ...vibe } },
+    }));
+  },
+  clearVibeForSection: (sectionId) => {
+    set((state) => {
+      const { [sectionId]: _, ...rest } = state.vibeSelections;
+      return { vibeSelections: rest };
+    });
   },
 
   // UI state
