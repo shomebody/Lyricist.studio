@@ -72,6 +72,10 @@ interface ArrangementState {
   setVibeForSection: (sectionId: string, vibe: Partial<VibeSelection>) => void;
   clearVibeForSection: (sectionId: string) => void;
 
+  // Pocket mode
+  pocketModeActive: boolean;
+  setPocketModeActive: (active: boolean) => void;
+
   // UI state
   isTemplateBuilderOpen: boolean;
   setTemplateBuilderOpen: (open: boolean) => void;
@@ -346,6 +350,10 @@ export const useArrangementStore = create<ArrangementState>((set, get) => ({
       return { vibeSelections: rest };
     });
   },
+
+  // Pocket mode
+  pocketModeActive: false,
+  setPocketModeActive: (active) => set({ pocketModeActive: active }),
 
   // UI state
   isTemplateBuilderOpen: false,

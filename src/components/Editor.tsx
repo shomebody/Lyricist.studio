@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo } from 'react';
+import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import Editor, { useMonaco } from '@monaco-editor/react';
 import { useStore, TEMPLATES } from '../store/useStore';
 import { countLineSyllables } from '../lib/syllables';
@@ -7,8 +7,24 @@ import { findCliches, ClicheMatch } from '../lib/cliches';
 import { useArrangementStore, selectCurrentArrangement } from '../store/arrangementStore';
 import { exportForSuno, SECTION_BG_COLORS, SectionType } from '../lib/arrangement';
 import { ArrangementStatusBar } from './ArrangementStatusBar';
-import { PocketPlayer } from './PocketPlayer';
-import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2 } from 'lucide-react';
+import { PocketPlayerFloating } from './PocketPlayer';
+import {
+  generateBlueprint,
+  scoreProsody,
+  scoreLineWords,
+  buildSyllableMap,
+  type ProsodyBlueprint,
+  type VibeSelection,
+  type WordAlignment,
+} from '../lib/prosody';
+import {
+  createKit,
+  stopPlayback,
+  playSyllableWalk,
+  cleanup,
+  type SyllableHighlight,
+} from '../lib/pocketPlayer';
+import { AlertCircle, CheckCircle2, Info, Copy, Sparkles, Save, Wand2, Activity } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { doc, setDoc, addDoc, collection } from 'firebase/firestore';
 
@@ -33,12 +49,22 @@ function clearGutterStyles() {
   }
 }
 
+// ─── Pocket mode word color CSS classes ─────────────────────────────
+
+const POCKET_WORD_COLORS: Record<WordAlignment, string> = {
+  match: '#4ade80',  // green
+  close: '#fbbf24',  // amber
+  fight: '#f87171',  // red
+  rest: '#52525b',   // dim gray
+};
+
 export function LyricEditor() {
   const { lyrics, setLyrics, currentTemplateId, stylePrompt, setStylePrompt, user, currentProjectId, setCurrentProjectId, lyricIssues } = useStore();
-  const { currentArrangementId, showBarAnnotations, rhymeAnalyses, mappedLines } = useArrangementStore();
+  const { currentArrangementId, showBarAnnotations, rhymeAnalyses, mappedLines, pocketModeActive, setPocketModeActive } = useArrangementStore();
   const monaco = useMonaco();
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<string[]>([]);
+  const playheadDecorRef = useRef<string[]>([]);
   const [validation, setValidation] = useState({ isValid: true, errors: [] as string[], warnings: [] as string[] });
   const [lineStats, setLineStats] = useState<{ line: number; syllables: number; target?: number }[]>([]);
   const [cliches, setCliches] = useState<ClicheMatch[]>([]);
@@ -47,6 +73,32 @@ export function LyricEditor() {
   const [isFormatting, setIsFormatting] = useState(false);
   const [projectTitle, setProjectTitle] = useState('Untitled Song');
   const [currentEditorLine, setCurrentEditorLine] = useState('');
+  const [currentLineNumber, setCurrentLineNumber] = useState(1);
+
+  // Pocket mode state
+  const [blueprint, setBlueprint] = useState<ProsodyBlueprint | null>(null);
+  const [pocketPlaying, setPocketPlaying] = useState(false);
+  const [currentSectionId, setCurrentSectionId] = useState<string | undefined>();
+  const [currentVibe, setCurrentVibe] = useState<Partial<VibeSelection>>({});
+
+  // Per-line prosody scores (computed when pocket mode is active)
+  const lineProsodyScores = useMemo(() => {
+    if (!pocketModeActive || !blueprint) return new Map<number, number>();
+    const scores = new Map<number, number>();
+    const lines = lyrics.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith('[') || /^\(.*\)$/.test(line)) continue;
+      const result = scoreProsody(blueprint, lines[i]);
+      scores.set(i + 1, result.score); // 1-indexed line number
+    }
+    return scores;
+  }, [pocketModeActive, blueprint, lyrics]);
+
+  // Current line prosody score for floating display
+  const currentLineProsodyScore = useMemo(() => {
+    return lineProsodyScores.get(currentLineNumber) ?? null;
+  }, [lineProsodyScores, currentLineNumber]);
 
   const rhymeMap = useMemo(() => {
     const map = new Map<number, { group: string, pattern: string, isFirstOfSection: boolean, sectionPattern: string, rhymeType: string }>();
@@ -111,7 +163,13 @@ export function LyricEditor() {
     E: '#f472b6', F: '#22d3ee', G: '#fb7185',
   };
 
-  // ─── Update all decorations (clichés, issues, syllable gutter, rhyme gutter) ──
+  const getProsodyScoreColor = (score: number): string => {
+    if (score >= 80) return '#4ade80'; // green
+    if (score >= 50) return '#fbbf24'; // amber
+    return '#f87171'; // red
+  };
+
+  // ─── Update all decorations (clichés, issues, syllable gutter, rhyme gutter, pocket) ──
   const updateDecorations = () => {
     if (!editorRef.current || !monaco) return;
 
@@ -153,14 +211,13 @@ export function LyricEditor() {
       });
     }
 
-    // Section background color decorations (Fix C)
+    // Section background color decorations
     for (const ml of mappedLines) {
       if (!ml.sectionType || ml.isBlankLine) continue;
       const lineNum = ml.lineIndex + 1;
       if (lineNum > totalLines) continue;
       const bgColor = SECTION_BG_COLORS[ml.sectionType as SectionType];
       if (!bgColor) continue;
-      // Structural tag lines get a stronger tint
       const opacity = ml.isStructuralTag ? 3 : 1;
       const sectionBgClass = `section-bg-${ml.sectionType}-${opacity}`;
       try {
@@ -173,56 +230,112 @@ export function LyricEditor() {
       });
     }
 
-    // Rhyme end-word inline coloring
-    for (const [lineIndex, info] of rhymeMap.entries()) {
-      if (info.group === '-') continue;
-      const lineNum = lineIndex + 1;
-      if (lineNum > totalLines) continue;
-      const lineContent = model.getLineContent(lineNum) || '';
-      const endWordMatch = lineContent.match(/\b\w+\b[^\w]*$/);
-      if (!endWordMatch) continue;
-      const startCol = endWordMatch.index! + 1;
-      const endCol = startCol + endWordMatch[0].replace(/[^\w]+$/, '').length;
-      newDecorations.push({
-        range: new monaco.Range(lineNum, startCol, lineNum, endCol),
-        options: {
-          isWholeLine: false,
-          inlineClassName: `rhyme-group-${info.group}`,
-          hoverMessage: { value: `**Rhyme Group ${info.group}** (${info.rhymeType})\nSection Pattern: ${info.sectionPattern}` },
-        },
-      });
+    // Rhyme end-word inline coloring (skip when pocket mode colors words)
+    if (!pocketModeActive) {
+      for (const [lineIndex, info] of rhymeMap.entries()) {
+        if (info.group === '-') continue;
+        const lineNum = lineIndex + 1;
+        if (lineNum > totalLines) continue;
+        const lineContent = model.getLineContent(lineNum) || '';
+        const endWordMatch = lineContent.match(/\b\w+\b[^\w]*$/);
+        if (!endWordMatch) continue;
+        const startCol = endWordMatch.index! + 1;
+        const endCol = startCol + endWordMatch[0].replace(/[^\w]+$/, '').length;
+        newDecorations.push({
+          range: new monaco.Range(lineNum, startCol, lineNum, endCol),
+          options: {
+            isWholeLine: false,
+            inlineClassName: `rhyme-group-${info.group}`,
+            hoverMessage: { value: `**Rhyme Group ${info.group}** (${info.rhymeType})\nSection Pattern: ${info.sectionPattern}` },
+          },
+        });
+      }
     }
 
-    // ─── Syllable count + Rhyme letter gutter decorations ─────────────
-    // Use glyphMarginClassName with CSS ::before for syllable counts
-    // and linesDecorationsClassName with CSS ::after for rhyme letters
+    // ─── Pocket mode: word-level stress coloring ─────────────────────
+    if (pocketModeActive && blueprint) {
+      for (let lineNum = 1; lineNum <= totalLines; lineNum++) {
+        const lineContent = model.getLineContent(lineNum) || '';
+        const wordAlignments = scoreLineWords(blueprint, lineContent);
+
+        for (const wa of wordAlignments) {
+          const color = POCKET_WORD_COLORS[wa.alignment];
+          const className = `pocket-word-${lineNum}-${wa.startCol}`;
+          try {
+            sheet.insertRule(`.${className} { color: ${color} !important; }`, sheet.cssRules.length);
+          } catch { /* ignore */ }
+
+          const hoverText = wa.alignment === 'match'
+            ? `Stress match: "${wa.word}" lands on correct beat`
+            : wa.alignment === 'close'
+            ? `Close: "${wa.word}" slightly off beat`
+            : wa.alignment === 'fight'
+            ? `Fights pocket: "${wa.word}" (${wa.actualStress === 'S' ? 'stressed' : 'unstressed'} word on ${wa.stressType === 'S' ? 'strong' : 'weak'} beat)`
+            : '';
+
+          newDecorations.push({
+            range: new monaco.Range(lineNum, wa.startCol, lineNum, wa.endCol),
+            options: {
+              isWholeLine: false,
+              inlineClassName: className,
+              ...(hoverText ? { hoverMessage: { value: hoverText } } : {}),
+            },
+          });
+        }
+      }
+    }
+
+    // ─── Syllable count + Prosody score gutter decorations ───────────
     for (const stat of lineStats) {
       const lineNum = stat.line;
       if (stat.syllables <= 0 || lineNum > totalLines) continue;
 
-      // Syllable count — shown in glyph margin via ::before
-      const sylText = stat.target !== undefined
-        ? `'${stat.syllables}/${stat.target}'`
-        : `'${stat.syllables}'`;
-      const sylColor = getSyllableColorHex(stat.syllables, stat.target);
-      const sylClassName = `syl-gutter-${lineNum}`;
+      // Build gutter text: syllable count + optional prosody score
+      const prosodyScore = pocketModeActive ? lineProsodyScores.get(lineNum) : undefined;
+      let sylText: string;
+      let sylColor: string;
 
-      try {
-        sheet.insertRule(`.${sylClassName}::before { content: ${sylText}; color: ${sylColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: ${stat.target !== undefined && stat.syllables === stat.target ? '700' : '400'}; display: flex; align-items: center; justify-content: flex-end; width: 100%; height: 100%; padding-right: 6px; }`, sheet.cssRules.length);
-      } catch { /* ignore insertion errors */ }
+      if (prosodyScore !== undefined) {
+        // Format: "9 ●85"
+        const scoreColor = getProsodyScoreColor(prosodyScore);
+        const sylCountColor = getSyllableColorHex(stat.syllables, stat.target);
+        const sylClassName = `syl-gutter-${lineNum}`;
 
-      newDecorations.push({
-        range: new monaco.Range(lineNum, 1, lineNum, 1),
-        options: {
-          glyphMarginClassName: sylClassName,
-        },
-      });
+        // Two-part gutter: syllable count in its color, bullet+score in score color
+        const countPart = stat.target !== undefined
+          ? `${stat.syllables}/${stat.target}`
+          : `${stat.syllables}`;
+
+        try {
+          sheet.insertRule(`.${sylClassName}::before { content: '${countPart} \\25CF${prosodyScore}'; color: ${scoreColor}; font-size: 10px; font-family: 'JetBrains Mono', monospace; font-weight: 700; display: flex; align-items: center; justify-content: flex-end; width: 100%; height: 100%; padding-right: 4px; }`, sheet.cssRules.length);
+        } catch { /* ignore */ }
+
+        newDecorations.push({
+          range: new monaco.Range(lineNum, 1, lineNum, 1),
+          options: { glyphMarginClassName: sylClassName },
+        });
+      } else {
+        // Standard syllable display
+        sylText = stat.target !== undefined
+          ? `'${stat.syllables}/${stat.target}'`
+          : `'${stat.syllables}'`;
+        sylColor = getSyllableColorHex(stat.syllables, stat.target);
+        const sylClassName = `syl-gutter-${lineNum}`;
+
+        try {
+          sheet.insertRule(`.${sylClassName}::before { content: ${sylText}; color: ${sylColor}; font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: ${stat.target !== undefined && stat.syllables === stat.target ? '700' : '400'}; display: flex; align-items: center; justify-content: flex-end; width: 100%; height: 100%; padding-right: 6px; }`, sheet.cssRules.length);
+        } catch { /* ignore */ }
+
+        newDecorations.push({
+          range: new monaco.Range(lineNum, 1, lineNum, 1),
+          options: { glyphMarginClassName: sylClassName },
+        });
+      }
 
       // Rhyme letter — shown after line content via afterContentClassName
-      const rhymeInfo = rhymeMap.get(lineNum - 1); // rhymeMap is 0-indexed
+      const rhymeInfo = rhymeMap.get(lineNum - 1);
       if (rhymeInfo && rhymeInfo.group !== '-') {
         const rhymeColor = RHYME_COLORS[rhymeInfo.group] || '#71717a';
-        // Show rhyme type indicator: perfect = bold, family/slant = normal, assonance = dim
         const typeIndicator = rhymeInfo.rhymeType === 'perfect' ? '' :
           rhymeInfo.rhymeType === 'family' ? '~' :
           rhymeInfo.rhymeType === 'slant' ? '≈' :
@@ -241,15 +354,70 @@ export function LyricEditor() {
         const lc = model.getLineContent(lineNum) || '';
         newDecorations.push({
           range: new monaco.Range(lineNum, lc.length + 1, lineNum, lc.length + 1),
-          options: {
-            afterContentClassName: rhymeClassName,
-          },
+          options: { afterContentClassName: rhymeClassName },
         });
       }
     }
 
     decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, newDecorations);
   };
+
+  // ─── Playhead highlight decoration ─────────────────────────────────
+  const applyPlayheadHighlight = useCallback((highlight: SyllableHighlight | null) => {
+    if (!editorRef.current || !monaco) return;
+
+    if (!highlight) {
+      playheadDecorRef.current = editorRef.current.deltaDecorations(playheadDecorRef.current, []);
+      return;
+    }
+
+    const newDecor = [{
+      range: new monaco.Range(highlight.lineNumber, highlight.charStart, highlight.lineNumber, highlight.charEnd),
+      options: {
+        isWholeLine: false,
+        inlineClassName: highlight.stressType === 'S' ? 'pocket-playhead-stressed' : 'pocket-playhead-unstressed',
+      },
+    }];
+    playheadDecorRef.current = editorRef.current.deltaDecorations(playheadDecorRef.current, newDecor);
+
+    // Auto-scroll to keep playhead visible
+    editorRef.current.revealLineInCenterIfOutsideViewport(highlight.lineNumber);
+  }, [monaco]);
+
+  // ─── Pocket mode play handler ──────────────────────────────────────
+  const handlePocketPlay = useCallback((kit: ReturnType<typeof createKit>, bpm: number, loop: boolean) => {
+    if (!blueprint) return;
+
+    // Build syllable map for current section or all lyrics
+    const syllablePositions = buildSyllableMap(lyrics, blueprint, bpm, mappedLines);
+
+    // Filter to current section if we have one
+    let sectionSyllables = syllablePositions;
+    if (currentSectionId) {
+      const filtered = syllablePositions.filter(s => s.sectionId === currentSectionId);
+      if (filtered.length > 0) sectionSyllables = filtered;
+    }
+
+    if (sectionSyllables.length === 0) return;
+
+    // Normalize time offsets to start from 0
+    const minTime = sectionSyllables[0].timeOffset;
+    const normalized = sectionSyllables.map(s => ({
+      ...s,
+      timeOffset: s.timeOffset - minTime,
+    }));
+
+    setPocketPlaying(true);
+    playSyllableWalk(normalized, bpm, kit, loop, applyPlayheadHighlight, () => {
+      setPocketPlaying(false);
+    });
+  }, [blueprint, lyrics, mappedLines, currentSectionId, applyPlayheadHighlight]);
+
+  const handlePocketStop = useCallback(() => {
+    stopPlayback();
+    setPocketPlaying(false);
+    applyPlayheadHighlight(null);
+  }, [applyPlayheadHighlight]);
 
   const handleEditorChange = (value: string | undefined) => {
     const val = value || '';
@@ -283,10 +451,9 @@ export function LyricEditor() {
   }, [currentTemplateId]);
 
   useEffect(() => {
-    // Use requestAnimationFrame to ensure Monaco model is updated before decorating
     const raf = requestAnimationFrame(() => updateDecorations());
     return () => cancelAnimationFrame(raf);
-  }, [lyricIssues, cliches, rhymeMap, lineStats, mappedLines]);
+  }, [lyricIssues, cliches, rhymeMap, lineStats, mappedLines, pocketModeActive, blueprint, lineProsodyScores]);
 
   const handleEditorDidMount = (editor: any) => {
     editorRef.current = editor;
@@ -298,12 +465,20 @@ export function LyricEditor() {
       editor.focus();
     });
 
-    // Track current line for PocketPlayer scoring
+    // Track current line for pocket scoring and section-aware vibes
     editor.onDidChangeCursorPosition((e: any) => {
       const model = editor.getModel();
       if (model) {
         const lineContent = model.getLineContent(e.position.lineNumber) || '';
         setCurrentEditorLine(lineContent);
+        setCurrentLineNumber(e.position.lineNumber);
+
+        // Determine which section the cursor is in
+        const lineIdx = e.position.lineNumber - 1;
+        const ml = mappedLines.find(m => m.lineIndex === lineIdx);
+        if (ml?.sectionId && ml.sectionId !== currentSectionId) {
+          setCurrentSectionId(ml.sectionId);
+        }
       }
     });
   };
@@ -311,6 +486,7 @@ export function LyricEditor() {
   useEffect(() => {
     return () => {
       useStore.getState().setEditorScrollToLine(null);
+      cleanup();
     };
   }, []);
 
@@ -378,8 +554,6 @@ ${lyrics}`
       });
       if (response.text) {
         const formatted = response.text.trim();
-        // Force full reanalysis after format — setLyrics alone doesn't
-        // recompute syllables, clichés, or arrangement mapping
         handleEditorChange(formatted);
       }
     } catch (error) {
@@ -411,6 +585,16 @@ ${lyrics}`
         .rhyme-group-E { color: #f472b6; font-weight: 500; }
         .rhyme-group-F { color: #22d3ee; font-weight: 500; }
         .rhyme-group-G { color: #fb7185; font-weight: 500; }
+        .pocket-playhead-stressed {
+          background-color: rgba(99, 102, 241, 0.35);
+          border-bottom: 2px solid #818cf8;
+          transition: background-color 0.05s;
+        }
+        .pocket-playhead-unstressed {
+          background-color: rgba(99, 102, 241, 0.15);
+          border-bottom: 1px solid #6366f180;
+          transition: background-color 0.05s;
+        }
       `}</style>
       <div className="flex flex-wrap items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-950/50 gap-2">
         <div className="flex flex-wrap items-center gap-4">
@@ -444,6 +628,20 @@ ${lyrics}`
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Pocket Mode Toggle */}
+          <button
+            onClick={() => setPocketModeActive(!pocketModeActive)}
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              pocketModeActive
+                ? 'bg-indigo-500 text-white hover:bg-indigo-600'
+                : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
+            }`}
+            title="Toggle Pocket Mode — color-code words by stress alignment"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            Pocket
+          </button>
+
           <button
             onClick={handleFormatForSuno}
             disabled={isFormatting || !lyrics.trim()}
@@ -498,9 +696,8 @@ ${lyrics}`
       </div>
 
       <ArrangementStatusBar />
-      <PocketPlayer currentLine={currentEditorLine} />
 
-      {/* Monaco Editor — gutter info rendered via decorations, not separate divs */}
+      {/* Monaco Editor with floating pocket controls */}
       <div className="flex-1 relative overflow-hidden">
         <Editor
           height="100%"
@@ -514,7 +711,7 @@ ${lyrics}`
             wordWrap: 'on',
             lineNumbers: 'off',
             glyphMargin: true,
-            glyphMarginWidth: 64,
+            glyphMarginWidth: pocketModeActive ? 80 : 64,
             folding: false,
             lineDecorationsWidth: 0,
             lineNumbersMinChars: 0,
@@ -526,6 +723,20 @@ ${lyrics}`
             contextmenu: true,
           }}
         />
+
+        {/* Floating Pocket Player Controls */}
+        {pocketModeActive && (
+          <PocketPlayerFloating
+            prosodyScore={currentLineProsodyScore}
+            onPlay={handlePocketPlay}
+            onStop={handlePocketStop}
+            isPlaying={pocketPlaying}
+            blueprint={blueprint}
+            onBlueprintChange={setBlueprint}
+            onVibeChange={setCurrentVibe}
+            currentSectionId={currentSectionId}
+          />
+        )}
       </div>
 
       {/* Validation Panel (Bottom) */}

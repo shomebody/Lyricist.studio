@@ -304,6 +304,75 @@ export async function playLineComparison(
   Tone.getTransport().start();
 }
 
+// ─── Syllable Walk Playback ──────────────────────────────────────────
+
+export interface SyllableHighlight {
+  lineNumber: number;
+  charStart: number;
+  charEnd: number;
+  stressType: StressType;
+}
+
+export type HighlightCallback = (highlight: SyllableHighlight | null) => void;
+
+/**
+ * Play through a section's syllables, firing a callback for each one
+ * to drive Monaco decoration highlighting.
+ */
+export async function playSyllableWalk(
+  syllables: { lineNumber: number; charStart: number; charEnd: number; stressType: StressType; timeOffset: number }[],
+  bpm: number,
+  kit: SoundKit,
+  loop: boolean,
+  onHighlight: HighlightCallback,
+  onStop?: () => void,
+): Promise<void> {
+  if (syllables.length === 0) return;
+
+  await Tone.start();
+  stopPlayback();
+
+  Tone.getTransport().bpm.value = bpm;
+  isPlaying = true;
+
+  const lastTime = syllables[syllables.length - 1].timeOffset;
+  const subdivisionTime = 60 / bpm / 4;
+  const totalDuration = lastTime + subdivisionTime * 4; // add a little buffer
+
+  for (const syl of syllables) {
+    const eventId = Tone.getTransport().schedule((t) => {
+      if (syl.stressType === 'S') kit.stressedSound();
+      else kit.unstressedSound();
+      // Use Tone.Draw for UI updates synced to audio
+      Tone.getDraw().schedule(() => {
+        onHighlight({
+          lineNumber: syl.lineNumber,
+          charStart: syl.charStart,
+          charEnd: syl.charEnd,
+          stressType: syl.stressType,
+        });
+      }, t);
+    }, syl.timeOffset);
+    scheduledEvents.push(eventId);
+  }
+
+  if (loop) {
+    const loopId = Tone.getTransport().schedule(() => {
+      Tone.getTransport().seconds = 0;
+    }, totalDuration);
+    scheduledEvents.push(loopId);
+  } else {
+    const stopId = Tone.getTransport().schedule(() => {
+      onHighlight(null);
+      stopPlayback();
+      if (onStop) onStop();
+    }, totalDuration);
+    scheduledEvents.push(stopId);
+  }
+
+  Tone.getTransport().start();
+}
+
 /**
  * Dispose all active sound kits and stop playback.
  */

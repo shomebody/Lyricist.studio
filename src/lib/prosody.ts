@@ -335,6 +335,188 @@ export function extractLineStressPublic(line: string): StressType[] {
   return extractLineStress(line);
 }
 
+// Re-export for external use
+export { estimateSyllables, getWordStress };
+
+// ─── Per-Word Alignment Scoring ──────────────────────────────────────
+
+export type WordAlignment = 'match' | 'close' | 'fight' | 'rest';
+
+export interface WordAlignmentInfo {
+  word: string;
+  startCol: number; // 1-indexed column in the line
+  endCol: number;   // 1-indexed column (exclusive)
+  alignment: WordAlignment;
+  stressType: StressType; // what the blueprint expects
+  actualStress: StressType; // what the word naturally does
+}
+
+/**
+ * Score each word in a line against a blueprint, returning per-word alignment
+ * data with character positions for Monaco decoration coloring.
+ */
+export function scoreLineWords(blueprint: ProsodyBlueprint, line: string): WordAlignmentInfo[] {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('[') || /^\(.*\)$/.test(trimmed)) return [];
+
+  const blueprintHits = blueprint.pattern.filter(h => h.type !== 'rest');
+  if (blueprintHits.length === 0) return [];
+
+  // Find word positions in the original line (not trimmed)
+  const wordRegex = /\b[a-zA-Z']+\b/g;
+  const wordMatches: { word: string; start: number; end: number }[] = [];
+  let match;
+  while ((match = wordRegex.exec(line)) !== null) {
+    wordMatches.push({
+      word: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+
+  if (wordMatches.length === 0) return [];
+
+  // Build syllable-to-word mapping
+  const syllableEntries: { wordIdx: number; stressType: StressType }[] = [];
+  for (let wi = 0; wi < wordMatches.length; wi++) {
+    const wordStresses = getWordStress(wordMatches[wi].word);
+    for (const s of wordStresses) {
+      syllableEntries.push({ wordIdx: wi, stressType: s });
+    }
+  }
+
+  // Align syllables to blueprint hits
+  const wordAlignments = new Map<number, { matches: number; total: number; fights: boolean }>();
+  for (let wi = 0; wi < wordMatches.length; wi++) {
+    wordAlignments.set(wi, { matches: 0, total: 0, fights: false });
+  }
+
+  const compareLen = Math.min(syllableEntries.length, blueprintHits.length);
+  for (let i = 0; i < compareLen; i++) {
+    const expected = blueprintHits[i].type;
+    const entry = syllableEntries[i];
+    const wa = wordAlignments.get(entry.wordIdx)!;
+    wa.total++;
+
+    if (expected === entry.stressType) {
+      wa.matches++;
+    } else {
+      // "Fight" = stressed syllable on weak beat or function word on strong beat
+      const isFight = (expected === 'S' && entry.stressType === 'w') ||
+                      (expected === 'w' && entry.stressType === 'S');
+      if (isFight) wa.fights = true;
+    }
+  }
+
+  const results: WordAlignmentInfo[] = [];
+  for (let wi = 0; wi < wordMatches.length; wi++) {
+    const wm = wordMatches[wi];
+    const wa = wordAlignments.get(wi)!;
+
+    let alignment: WordAlignment;
+    if (wa.total === 0) {
+      // Word has syllables beyond the blueprint length
+      alignment = 'rest';
+    } else if (wa.matches === wa.total) {
+      alignment = 'match';
+    } else if (wa.fights) {
+      alignment = 'fight';
+    } else {
+      alignment = 'close';
+    }
+
+    // Determine predominant stress for this word's syllables
+    const wordStresses = getWordStress(wm.word);
+    const primaryStress = wordStresses.includes('S') ? 'S' : 'w';
+
+    // Find what the blueprint expected for the first syllable of this word
+    const firstSylIdx = syllableEntries.findIndex(e => e.wordIdx === wi);
+    const expectedStress = firstSylIdx >= 0 && firstSylIdx < blueprintHits.length
+      ? blueprintHits[firstSylIdx].type
+      : 'rest' as StressType;
+
+    results.push({
+      word: wm.word,
+      startCol: wm.start + 1, // Monaco is 1-indexed
+      endCol: wm.end + 1,
+      alignment,
+      stressType: expectedStress,
+      actualStress: primaryStress,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Build a syllable map for playhead animation.
+ * Returns an array of syllable positions mapped to editor coordinates.
+ */
+export interface SyllablePosition {
+  lineNumber: number;
+  charStart: number; // 1-indexed
+  charEnd: number;   // 1-indexed
+  stressType: StressType;
+  timeOffset: number; // in seconds from pattern start
+  sectionId?: string;
+}
+
+export function buildSyllableMap(
+  lyrics: string,
+  blueprint: ProsodyBlueprint,
+  bpm: number,
+  mappedLines: { lineIndex: number; sectionId?: string; sectionLabel?: string; isStructuralTag?: boolean; isBlankLine?: boolean; text: string }[],
+): SyllablePosition[] {
+  const subdivisionTime = 60 / bpm / 4; // duration of one 16th note
+  const blueprintHits = blueprint.pattern.filter(h => h.type !== 'rest');
+  const lines = lyrics.split('\n');
+  const positions: SyllablePosition[] = [];
+  let globalSylIdx = 0;
+  let sectionTimeOffset = 0;
+
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('[') || /^\(.*\)$/.test(trimmed)) continue;
+
+    const ml = mappedLines.find(m => m.lineIndex === li);
+
+    // Find words in this line
+    const wordRegex = /\b[a-zA-Z']+\b/g;
+    let match;
+    while ((match = wordRegex.exec(line)) !== null) {
+      const word = match[0];
+      const stresses = getWordStress(word);
+      for (let si = 0; si < stresses.length; si++) {
+        if (globalSylIdx < blueprintHits.length) {
+          const hitPos = blueprintHits[globalSylIdx].position;
+          positions.push({
+            lineNumber: li + 1,
+            charStart: match.index + 1,
+            charEnd: match.index + word.length + 1,
+            stressType: blueprintHits[globalSylIdx].type,
+            timeOffset: sectionTimeOffset + (hitPos * subdivisionTime),
+            sectionId: ml?.sectionId,
+          });
+          globalSylIdx++;
+        }
+      }
+    }
+
+    // After each line, advance the time offset by the full pattern length
+    // to place next line's syllables in the next pattern cycle
+    if (globalSylIdx > 0 && globalSylIdx >= blueprintHits.length) {
+      const patternDuration = blueprint.pattern.length > 0
+        ? (Math.max(...blueprint.pattern.map(h => h.position)) + 1) * subdivisionTime
+        : 32 * subdivisionTime;
+      sectionTimeOffset += patternDuration;
+      globalSylIdx = 0; // reset for next line
+    }
+  }
+
+  return positions;
+}
+
 export function scoreProsody(blueprint: ProsodyBlueprint, line: string): ProsodyScore {
   const lineStresses = extractLineStress(line);
   const blueprintHits = blueprint.pattern.filter(h => h.type !== 'rest');
